@@ -18,8 +18,19 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/LasseLegarth/community-teslafleet/internal/config"
 	"github.com/LasseLegarth/community-teslafleet/internal/store"
+)
+
+// Wake-then-command timing. Variables (not consts) so tests can shrink them.
+// Defaults follow Tesla's guidance: a woken car takes 10-60s to connect, so
+// poll every few seconds until online with a ~40s ceiling, then let it settle.
+var (
+	wakePollInterval = 3 * time.Second
+	wakeTimeout      = 40 * time.Second
+	wakeReadyBuffer  = 2 * time.Second
 )
 
 // Entity is a command entity exposed in Home Assistant.
@@ -138,6 +149,7 @@ type Relay struct {
 	log       *slog.Logger
 	knownVINs map[string]bool
 	store     locator
+	wakeGroup singleflight.Group // coalesces concurrent wakes per VIN
 }
 
 // NewRelay builds the command relay. knownVINs is the set of configured VINs;
@@ -356,40 +368,66 @@ func (r *Relay) Handle(vin, key, payload string) {
 	}
 }
 
-// VehicleDisplayName fetches the car's owner-given name from the Fleet API
-// (GET /api/1/vehicles/{vin} → response.display_name). Does not wake the car.
-// Requires commands.fleet_api_url; returns "" if unavailable.
-func (r *Relay) VehicleDisplayName(vin string) (string, error) {
+// vehicleSummary is the subset of GET /api/1/vehicles/{vin} we consume.
+type vehicleSummary struct {
+	DisplayName string `json:"display_name"`
+	State       string `json:"state"` // online | asleep | offline
+}
+
+// getVehicle fetches the vehicle summary from the Fleet API. Does not wake the
+// car. Requires commands.fleet_api_url.
+func (r *Relay) getVehicle(vin string) (vehicleSummary, error) {
+	var vs vehicleSummary
 	if r.fleetAPI == "" {
-		return "", fmt.Errorf("fleet_api_url not set")
+		return vs, fmt.Errorf("fleet_api_url not set")
 	}
 	tok, err := r.tm.token()
 	if err != nil {
-		return "", fmt.Errorf("token: %w", err)
+		return vs, fmt.Errorf("token: %w", err)
 	}
 	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/1/vehicles/%s", r.fleetAPI, vin), nil)
 	if err != nil {
-		return "", err
+		return vs, err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := r.apiClient.Do(req)
 	if err != nil {
-		return "", err
+		return vs, err
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 16384))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(rb)))
+		return vs, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(rb)))
 	}
 	var out struct {
-		Response struct {
-			DisplayName string `json:"display_name"`
-		} `json:"response"`
+		Response vehicleSummary `json:"response"`
 	}
 	if err := json.Unmarshal(rb, &out); err != nil {
+		return vs, err
+	}
+	out.Response.DisplayName = strings.TrimSpace(out.Response.DisplayName)
+	out.Response.State = strings.TrimSpace(out.Response.State)
+	return out.Response, nil
+}
+
+// VehicleDisplayName fetches the car's owner-given name from the Fleet API.
+// Does not wake the car. Returns "" if unavailable.
+func (r *Relay) VehicleDisplayName(vin string) (string, error) {
+	vs, err := r.getVehicle(vin)
+	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(out.Response.DisplayName), nil
+	return vs.DisplayName, nil
+}
+
+// vehicleState returns the vehicle's top-level connectivity state
+// ("online"/"asleep"/"offline") from the Fleet API. Does not wake the car.
+func (r *Relay) vehicleState(vin string) (string, error) {
+	vs, err := r.getVehicle(vin)
+	if err != nil {
+		return "", err
+	}
+	return vs.State, nil
 }
 
 // latlon returns the vehicle's last-known GPS from the store.
@@ -449,12 +487,81 @@ func (r *Relay) navigate(vin, destination string) error {
 	return nil
 }
 
+// command sends a signed command through the proxy. If the car is asleep (the
+// proxy returns "vehicle unavailable: vehicle is offline or asleep"), it wakes
+// the car and retries exactly once, so a command sent to a sleeping car still
+// lands. Retrying after an explicit asleep error is safe even for momentary
+// commands (honk/flash): the command provably did not execute, so it cannot
+// double-fire. Errors unrelated to sleep are returned as-is without retry.
 func (r *Relay) command(vin, name string, body map[string]any) error {
-	return r.post(fmt.Sprintf("%s/api/1/vehicles/%s/command/%s", r.proxy, vin, name), body)
+	urlStr := fmt.Sprintf("%s/api/1/vehicles/%s/command/%s", r.proxy, vin, name)
+	err := r.post(urlStr, body)
+	if !isAsleepErr(err) {
+		return err
+	}
+	r.log.Info("command hit a sleeping car — waking, then retrying", "vin", vin, "cmd", name)
+	if wErr := r.ensureAwake(vin); wErr != nil {
+		return fmt.Errorf("%s: car asleep and wake failed: %w (original: %v)", name, wErr, err)
+	}
+	return r.post(urlStr, body)
 }
 
 func (r *Relay) wake(vin string) error {
 	return r.post(fmt.Sprintf("%s/api/1/vehicles/%s/wake_up", r.proxy, vin), nil)
+}
+
+// isAsleepErr reports whether a command error is Tesla's "car is asleep/offline"
+// condition. The vehicle-command proxy returns HTTP 500 wrapping
+// "vehicle unavailable: vehicle is offline or asleep"; the status code alone is
+// not distinctive, so the message text is matched.
+func isAsleepErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "offline or asleep") || strings.Contains(s, "vehicle unavailable")
+}
+
+// ensureAwake wakes the vehicle and blocks until the Fleet API reports it online
+// (or a timeout). Concurrent callers for the same VIN share one wake via
+// singleflight, so a burst of commands against a sleeping car triggers a single
+// wake_up. Returns nil once the car is online.
+func (r *Relay) ensureAwake(vin string) error {
+	_, err, _ := r.wakeGroup.Do(vin, func() (any, error) {
+		return nil, r.wakeAndWait(vin)
+	})
+	return err
+}
+
+// wakeAndWait sends wake_up and polls the vehicle's state until it is online.
+func (r *Relay) wakeAndWait(vin string) error {
+	if err := r.wake(vin); err != nil {
+		return fmt.Errorf("wake_up: %w", err)
+	}
+	// Without a Fleet API URL we cannot poll state — fall back to a fixed wait
+	// and let the caller's retry find out whether the car actually woke.
+	if r.fleetAPI == "" {
+		time.Sleep(wakeTimeout / 2)
+		return nil
+	}
+	deadline := time.Now().Add(wakeTimeout)
+	var lastState string
+	for {
+		time.Sleep(wakePollInterval)
+		state, err := r.vehicleState(vin)
+		if err != nil {
+			r.log.Warn("wake poll: state check failed", "vin", vin, "err", err)
+		} else {
+			lastState = state
+			if state == "online" {
+				time.Sleep(wakeReadyBuffer) // let the car settle before commanding
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("car did not come online within %s (last state %q)", wakeTimeout, lastState)
+		}
+	}
 }
 
 // Enroll pushes a fleet_telemetry_config to the vehicle-command proxy using the

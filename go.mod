@@ -1,6 +1,6 @@
 module github.com/LasseLegarth/community-teslafleet
 
-go 1.25
+go 1.25.0
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.0
@@ -13,6 +13,6 @@ require (
 require (
 	github.com/go-zeromq/goczmq/v4 v4.2.2 // indirect
 	golang.org/x/net v0.27.0 // indirect
-	golang.org/x/sync v0.7.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/text v0.16.0 // indirect
 )
