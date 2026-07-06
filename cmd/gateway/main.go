@@ -104,6 +104,19 @@ func main() {
 	}
 	st := store.New(vins...)
 
+	// Restore last-known field values from disk so an asleep/away car's sensors
+	// (battery, charge-limit, plugged_in, …) survive a restart instead of reading
+	// "unknown" until the car next wakes. Then keep the snapshot fresh in the
+	// background.
+	if p := cfg.State.SnapshotPath; p != "" {
+		if n, err := st.Load(p); err != nil {
+			log.Warn("state snapshot load failed", "path", p, "err", err)
+		} else if n > 0 {
+			log.Info("state snapshot restored", "path", p, "vehicles", n)
+		}
+		go st.Persist(ctx, p, 30*time.Second, log)
+	}
+
 	// Load per-VIN templates (captured vehicle_data). Missing template → skeleton.
 	tmpls := map[string]*vehicledata.Template{}
 	for _, v := range cfg.Vehicles {

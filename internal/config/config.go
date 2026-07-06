@@ -236,9 +236,14 @@ type Units struct {
 }
 
 type State struct {
-	StaleAfterSeconds    int  `yaml:"stale_after_seconds"`
-	OnlineGraceSeconds   int  `yaml:"online_grace_seconds"`
-	ReportAsleepWhenIdle bool `yaml:"report_asleep_when_idle"`
+	StaleAfterSeconds    int    `yaml:"stale_after_seconds"`
+	OnlineGraceSeconds   int    `yaml:"online_grace_seconds"`
+	ReportAsleepWhenIdle bool   `yaml:"report_asleep_when_idle"`
+	// SnapshotPath persists the last-known field values to disk so they survive a
+	// gateway restart: a car that is asleep/away streams nothing, so without this
+	// its battery/charge-limit/plugged_in sensors would read "unknown" after every
+	// restart until it next wakes. Empty disables persistence. Default /data/state.json.
+	SnapshotPath string `yaml:"snapshot_path"`
 }
 
 func Defaults() Config {
@@ -277,7 +282,7 @@ func Defaults() Config {
 		// OnlineGrace 300s keeps a parked-but-connected car "online" between sparse
 		// battery telemetry updates (Soc 60s / RatedRange 120s); it flips to asleep
 		// only after telemetry genuinely stops. Keeps TeslaMate's WSS stream open.
-		State:    State{StaleAfterSeconds: 660, OnlineGraceSeconds: 300},
+		State:    State{StaleAfterSeconds: 660, OnlineGraceSeconds: 300, SnapshotPath: "/data/state.json"},
 		LogLevel: "info",
 	}
 }
@@ -476,6 +481,7 @@ func applyEnv(c *Config) {
 	setInt(&c.State.OnlineGraceSeconds, "TGW_STATE_ONLINE_GRACE_SECONDS")
 	setInt(&c.State.StaleAfterSeconds, "TGW_STATE_STALE_AFTER_SECONDS")
 	setBool(&c.State.ReportAsleepWhenIdle, "TGW_STATE_REPORT_ASLEEP_WHEN_IDLE")
+	setStr(&c.State.SnapshotPath, "TGW_STATE_SNAPSHOT_PATH")
 	setBool(&c.Onboard.Enabled, "TGW_ONBOARD_ENABLED")
 	setStr(&c.Onboard.Listen, "TGW_ONBOARD_LISTEN")
 	setStr(&c.Onboard.Password, "TGW_ONBOARD_PASSWORD")
