@@ -433,11 +433,29 @@ func hvacOn(v any) bool {
 }
 
 // pluggedIn derives whether the car is connected to a charger.
+//
+// ChargePortLatch is the authoritative signal: Tesla emits it both ways
+// (Engaged/Disengaged) around every plug and unplug, so when we have it we
+// trust it exclusively. We must NOT fall through to ChargingCableType —
+// Tesla only ever streams a concrete cable type (CableTypeIEC/SAE) and never
+// resets it to CableTypeNone, so that field is write-once and would pin
+// plugged_in "on" forever after the first charge. Cable type / door survive
+// only as a fallback for a car that has not reported a latch yet.
+//
+// Physical backstop: a moving car cannot be plugged in (the car refuses to
+// shift out of Park while the cable is latched). If the Disengaged event was
+// missed — e.g. unplugged while asleep — driving still forces plugged_in off.
 func pluggedIn(snap store.Snapshot) bool {
+	switch store.GearString(snap.Str(store.FieldGear)) {
+	case "D", "R", "N":
+		return false
+	}
+	if v, ok := snap.Num(store.FieldVehicleSpeed); ok && v > 0 {
+		return false
+	}
+
 	if s := snap.Str(store.FieldChargePortLatch); s != "" {
-		if strings.Contains(s, "Engaged") {
-			return true
-		}
+		return strings.Contains(s, "Engaged")
 	}
 	if s := snap.Str(store.FieldChargingCableType); s != "" {
 		// A non-empty, non-invalid cable type means a cable is present.
