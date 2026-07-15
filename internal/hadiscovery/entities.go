@@ -419,7 +419,15 @@ func buildState(snap store.Snapshot, d store.Derived, units config.Units) map[st
 		if covered[name] {
 			continue
 		}
-		s[name] = genericValue(fv.Value)
+		val := genericValue(fv.Value)
+		// HA rejects a sensor state longer than 255 chars ("exceeds maximum
+		// length (255)") — the entity then spams the log and falls back to
+		// unknown every publish. Drop any over-long string generically rather
+		// than let an unforeseen field churn.
+		if str, ok := val.(string); ok && len(str) > maxHAStateLen {
+			continue
+		}
+		s[name] = val
 	}
 	return s
 }
@@ -478,8 +486,13 @@ func genericValue(v any) any {
 	return v
 }
 
+// maxHAStateLen is Home Assistant's hard limit on a sensor state string; a
+// longer value is rejected with "exceeds maximum length (255)".
+const maxHAStateLen = 255
+
 // coveredFields lists Tesla telemetry field names represented by a curated,
-// composite or derived entity, so generic per-field discovery skips them.
+// composite or derived entity (or deliberately excluded, e.g. RouteLine), so
+// generic per-field discovery skips them.
 func coveredFields() map[string]bool {
 	m := map[string]bool{
 		store.FieldVehicleSpeed:      true, // speed
@@ -499,6 +512,7 @@ func coveredFields() map[string]bool {
 		store.FieldLocation:          true, // device_tracker
 		store.FieldDestinationLocation: true, // device_tracker
 		store.FieldOriginLocation:    true, // device_tracker
+		"RouteLine":                  true, // encoded nav polyline — not a useful sensor, and >255 chars while navigating (exceeds HA's state length limit)
 	}
 	for _, n := range numItems {
 		m[n.field] = true
