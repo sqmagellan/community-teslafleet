@@ -41,7 +41,9 @@ func TestBuildState_NewKeys(t *testing.T) {
 	st.SetField(vin, store.FieldTpmsRR, float64(3.1))
 
 	snap, _ := st.Snapshot(vin)
-	s := buildState(snap, store.Derived{State: "online"}, config.Units{})
+	// Charging: true — the fixture represents an active charge session, so
+	// charger_voltage is reported rather than clamped to 0.
+	s := buildState(snap, store.Derived{State: "online", Charging: true}, config.Units{})
 
 	checks := map[string]any{
 		"charging_state":  "Charging",

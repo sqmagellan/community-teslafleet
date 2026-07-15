@@ -44,14 +44,14 @@ func Derive(s Snapshot, cfg config.State, now time.Time) Derived {
 }
 
 func isDriving(s Snapshot) bool {
+	// Gear only. VehicleSpeed is deliberately NOT used: Tesla stops streaming it
+	// at a small non-zero residual when parking (e.g. 0.6 mph) and never sends a
+	// clean 0, so a speed>0 test stays true forever after a drive — which pinned
+	// the car "driving/online" and the speed sensor non-zero while parked. Gear
+	// reliably streams P on park.
 	if g, ok := s.Field(FieldGear); ok {
 		switch GearString(g.Value) {
 		case "D", "R", "N":
-			return true
-		}
-	}
-	if v, ok := s.Field(FieldVehicleSpeed); ok {
-		if f, ok := ToFloat(v.Value); ok && f > 0 {
 			return true
 		}
 	}

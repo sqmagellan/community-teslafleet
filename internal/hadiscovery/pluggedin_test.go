@@ -6,10 +6,14 @@ import (
 	"github.com/LasseLegarth/community-teslafleet/internal/store"
 )
 
-// TestPluggedIn covers the derivation of the plugged_in binary_sensor, with
-// emphasis on the production bug where ChargingCableType (which Tesla never
-// resets to CableTypeNone) pinned plugged_in "on" forever after the first
-// charge — even while driving.
+// TestPluggedIn covers the derivation of the plugged_in binary_sensor. It is
+// now purely ChargePortLatch (Tesla's authoritative, both-ways signal); every
+// other input is deliberately ignored because it is fragile:
+//   - ChargingCableType is sticky (Tesla never sends CableTypeNone) — it used
+//     to pin plugged_in on forever.
+//   - A Gear/VehicleSpeed "driving" backstop read fields that stop at a
+//     non-zero residual and never reach 0 — it stuck plugged_in *off* every
+//     evening after a drive.
 func TestPluggedIn(t *testing.T) {
 	const iec = "CableTypeIEC"
 	const engaged = "ChargePortLatchEngaged"
@@ -25,38 +29,26 @@ func TestPluggedIn(t *testing.T) {
 		want   bool
 	}{
 		{
-			name:   "latch engaged, parked",
-			fields: []field{{store.FieldChargePortLatch, engaged}, {store.FieldGear, "ShiftStateP"}},
+			name:   "latch engaged -> plugged",
+			fields: []field{{store.FieldChargePortLatch, engaged}},
 			want:   true,
 		},
 		{
-			name:   "latch disengaged clears even with sticky cable set (production bug)",
-			fields: []field{{store.FieldChargePortLatch, disengaged}, {store.FieldChargingCableType, iec}, {store.FieldGear, "ShiftStateP"}},
+			name:   "latch disengaged -> not plugged (ignores sticky cable + open door)",
+			fields: []field{{store.FieldChargePortLatch, disengaged}, {store.FieldChargingCableType, iec}, {store.FieldChargePortDoorOpen, true}},
 			want:   false,
 		},
 		{
-			name:   "driving forces false despite stale engaged latch + sticky cable",
-			fields: []field{{store.FieldChargePortLatch, engaged}, {store.FieldChargingCableType, iec}, {store.FieldGear, "ShiftStateD"}},
-			want:   false,
-		},
-		{
-			name:   "speed>0 forces false",
-			fields: []field{{store.FieldChargePortLatch, engaged}, {store.FieldChargingCableType, iec}, {store.FieldVehicleSpeed, float64(37)}},
-			want:   false,
-		},
-		{
-			name:   "no latch yet, cable present, parked -> fallback true",
-			fields: []field{{store.FieldChargingCableType, iec}, {store.FieldGear, "ShiftStateP"}},
+			// Regression for the "not plugged in every evening" bug: after a
+			// drive VehicleSpeed sticks at a small non-zero residual and Tesla
+			// never streams 0. A parked, plugged car must stay plugged.
+			name:   "parked with stale residual speed stays plugged",
+			fields: []field{{store.FieldChargePortLatch, engaged}, {store.FieldGear, "ShiftStateP"}, {store.FieldVehicleSpeed, float64(0.621)}},
 			want:   true,
 		},
 		{
-			name:   "no latch yet, charge-port door open -> fallback true",
-			fields: []field{{store.FieldChargePortDoorOpen, true}},
-			want:   true,
-		},
-		{
-			name:   "nothing known",
-			fields: nil,
+			name:   "latch never reported -> not plugged (no guessing from cable/door)",
+			fields: []field{{store.FieldChargingCableType, iec}, {store.FieldChargePortDoorOpen, true}},
 			want:   false,
 		},
 	}

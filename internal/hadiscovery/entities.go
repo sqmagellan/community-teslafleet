@@ -285,6 +285,12 @@ func buildState(snap store.Snapshot, d store.Derived, units config.Units) map[st
 		}
 	}
 
+	// ChargerVoltage decays to a small non-zero residual after a session ends
+	// (Tesla never streams a clean 0), so show 0 unless actually charging.
+	if _, ok := s["charger_voltage"]; ok && !d.Charging {
+		s["charger_voltage"] = 0
+	}
+
 	// Speed: 0 when parked so HA shows a clean zero rather than a stale value.
 	if d.Driving {
 		if v, ok := snap.Num(store.FieldVehicleSpeed); ok {
@@ -299,10 +305,16 @@ func buildState(snap store.Snapshot, d store.Derived, units config.Units) map[st
 		s["charger_power"] = roundP(p, 1)
 	}
 	// Drive/regen power, derived from battery pack: V × A → kW (no direct signal).
-	if v, ok := snap.Num(store.FieldPackVoltage); ok {
-		if a, ok2 := snap.Num(store.FieldPackCurrent); ok2 {
-			s["power"] = roundP(v*a/1000, 1)
+	// PackCurrent decays to a small residual when idle (never a clean 0), so only
+	// report pack power while driving or charging; otherwise it is 0.
+	if d.Driving || d.Charging {
+		if v, ok := snap.Num(store.FieldPackVoltage); ok {
+			if a, ok2 := snap.Num(store.FieldPackCurrent); ok2 {
+				s["power"] = roundP(v*a/1000, 1)
+			}
 		}
+	} else {
+		s["power"] = 0
 	}
 
 	// Curated bools.
@@ -440,41 +452,18 @@ func hvacOn(v any) bool {
 	return strings.EqualFold(normalizeEnum(asStr(v)), "On")
 }
 
-// pluggedIn derives whether the car is connected to a charger.
+// pluggedIn derives whether a charge cable is connected.
 //
-// ChargePortLatch is the authoritative signal: Tesla emits it both ways
-// (Engaged/Disengaged) around every plug and unplug, so when we have it we
-// trust it exclusively. We must NOT fall through to ChargingCableType —
-// Tesla only ever streams a concrete cable type (CableTypeIEC/SAE) and never
-// resets it to CableTypeNone, so that field is write-once and would pin
-// plugged_in "on" forever after the first charge. Cable type / door survive
-// only as a fallback for a car that has not reported a latch yet.
-//
-// Physical backstop: a moving car cannot be plugged in (the car refuses to
-// shift out of Park while the cable is latched). If the Disengaged event was
-// missed — e.g. unplugged while asleep — driving still forces plugged_in off.
+// ChargePortLatch is Tesla's authoritative — and only reliable — plug signal:
+// it is discrete and streams both ways (Engaged on plug-in, Disengaged on
+// unplug), so we use nothing else. Every alternative is fragile and has bitten
+// us: Tesla never resets ChargingCableType to CableTypeNone (so OR'ing it pins
+// plugged_in on forever after the first charge), and a Gear/VehicleSpeed
+// "driving" backstop reads fields that stop at a non-zero residual and never
+// reach 0 — which stuck plugged_in *off* every evening after a drive. If the
+// latch has never been reported we report not-plugged rather than guess.
 func pluggedIn(snap store.Snapshot) bool {
-	switch store.GearString(snap.Str(store.FieldGear)) {
-	case "D", "R", "N":
-		return false
-	}
-	if v, ok := snap.Num(store.FieldVehicleSpeed); ok && v > 0 {
-		return false
-	}
-
-	if s := snap.Str(store.FieldChargePortLatch); s != "" {
-		return strings.Contains(s, "Engaged")
-	}
-	if s := snap.Str(store.FieldChargingCableType); s != "" {
-		// A non-empty, non-invalid cable type means a cable is present.
-		if !strings.EqualFold(s, "<invalid>") && !strings.EqualFold(s, "CableTypeNone") {
-			return true
-		}
-	}
-	if b, ok := snap.Bool(store.FieldChargePortDoorOpen); ok && b {
-		return true
-	}
-	return false
+	return strings.Contains(snap.Str(store.FieldChargePortLatch), "Engaged")
 }
 
 // genericValue normalizes a raw field value for the generic state pass: enum

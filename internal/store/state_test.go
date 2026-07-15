@@ -110,3 +110,31 @@ func TestGearString(t *testing.T) {
 		}
 	}
 }
+
+// TestIsDriving_IgnoresResidualSpeed guards the fix for the car showing
+// "driving"/non-zero speed while parked: Tesla stops streaming VehicleSpeed at
+// a small non-zero residual and never sends 0, so isDriving must rely on Gear
+// (which streams P on park), not speed.
+func TestIsDriving_IgnoresResidualSpeed(t *testing.T) {
+	cases := []struct {
+		name  string
+		gear  string
+		speed float64
+		want  bool
+	}{
+		{"parked with stale residual speed", "ShiftStateP", 0.621, false},
+		{"driving", "ShiftStateD", 30, true},
+		{"reverse", "ShiftStateR", 1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New("VIN")
+			s.SetField("VIN", FieldGear, tc.gear)
+			s.SetField("VIN", FieldVehicleSpeed, tc.speed)
+			snap, _ := s.Snapshot("VIN")
+			if got := isDriving(snap); got != tc.want {
+				t.Errorf("isDriving(gear=%s, speed=%v) = %v, want %v", tc.gear, tc.speed, got, tc.want)
+			}
+		})
+	}
+}
