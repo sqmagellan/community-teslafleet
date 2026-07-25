@@ -303,3 +303,39 @@ func (s *Store) VINs() []string {
 
 // Now returns the store's clock (overridable in tests).
 func (s *Store) Now() time.Time { return s.now() }
+
+// SetClock replaces the store's clock. It is a test seam, not runtime
+// reconfiguration: staleness, sleep detection and readiness are all pure
+// functions of elapsed time, and asserting them against the wall clock means
+// either sleeping in tests or accepting flakes. Call it before the store is
+// shared with other goroutines.
+func (s *Store) SetClock(now func() time.Time) { s.now = now }
+
+// LastIngest returns the most recent moment ANY vehicle received a telemetry
+// field, or the zero time if nothing has ever been ingested.
+//
+// This is the number a health check needs. Per-vehicle silence is normal and
+// expected — a sleeping car streams nothing for hours — but silence across the
+// whole fleet while a car is awake means ingest has stopped, which is otherwise
+// invisible: the MQTT publisher runs off a ticker and keeps republishing the
+// in-memory store at full rate, so message flow proves nothing about ingest.
+func (s *Store) LastIngest() time.Time {
+	// Copy the vehicle pointers under the store lock, then read each vehicle
+	// under its own lock, so the two locks are never held at the same time.
+	s.mu.RLock()
+	vehicles := make([]*vehicle, 0, len(s.vehicles))
+	for _, v := range s.vehicles {
+		vehicles = append(vehicles, v)
+	}
+	s.mu.RUnlock()
+
+	var last time.Time
+	for _, v := range vehicles {
+		v.mu.RLock()
+		if v.lastV.After(last) {
+			last = v.lastV
+		}
+		v.mu.RUnlock()
+	}
+	return last
+}
