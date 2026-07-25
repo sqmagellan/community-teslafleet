@@ -572,7 +572,20 @@ func (p *Publisher) valueTemplate(e entity) string {
 	if e.ValueTmpl != "" {
 		return e.ValueTmpl
 	}
-	// Render nothing (entity unavailable) when the key is absent, so HA shows
-	// "unknown" instead of a stale value.
+	// An absent key must render as something HA accepts for this entity type.
+	//
+	// For device_class "enum", the empty string is NOT a member of the declared
+	// options list, so HA rejects it and logs
+	//   Ignoring invalid option ... got ''
+	// on EVERY message. With two parked cars that was ~86k warning lines/day.
+	// Rendering the Jinja literal none yields state "unknown", which HA accepts
+	// for any entity regardless of options.
+	//
+	// For every other device_class the empty string is the correct "no value"
+	// rendering, so keep it: switching those to none would change published
+	// payloads for entities that are working today.
+	if e.DeviceClass == "enum" {
+		return fmt.Sprintf("{{ value_json.%s | default(none) }}", e.Key)
+	}
 	return fmt.Sprintf("{{ value_json.%s | default('') }}", e.Key)
 }
