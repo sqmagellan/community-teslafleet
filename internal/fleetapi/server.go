@@ -76,7 +76,7 @@ func (s *Server) handleProducts(w http.ResponseWriter, _ *http.Request) {
 	for _, v := range vehicles {
 		out = append(out, s.summary(v))
 	}
-	writeResponse(w, out)
+	s.writeResponse(w, out)
 }
 
 // effectiveVehicles returns the configured vehicles plus an auto-built Vehicle for
@@ -100,27 +100,27 @@ func (s *Server) effectiveVehicles() []config.Vehicle {
 func (s *Server) handleVehicle(w http.ResponseWriter, r *http.Request) {
 	v, ok := s.lookup(r)
 	if !ok {
-		writeError(w, http.StatusNotFound, "not_found")
+		s.writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
-	writeResponse(w, s.summary(v))
+	s.writeResponse(w, s.summary(v))
 }
 
 func (s *Server) handleWake(w http.ResponseWriter, r *http.Request) {
 	v, ok := s.lookup(r)
 	if !ok {
-		writeError(w, http.StatusNotFound, "not_found")
+		s.writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
 	sum := s.summary(v)
 	sum["state"] = "online" // wake_up always reports the car coming online
-	writeResponse(w, sum)
+	s.writeResponse(w, sum)
 }
 
 func (s *Server) handleVehicleData(w http.ResponseWriter, r *http.Request) {
 	v, ok := s.lookup(r)
 	if !ok {
-		writeError(w, http.StatusNotFound, "not_found")
+		s.writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
 	snap, _ := s.store.Snapshot(v.VIN)
@@ -128,7 +128,7 @@ func (s *Server) handleVehicleData(w http.ResponseWriter, r *http.Request) {
 	d := store.Derive(snap, s.cfg.State, now)
 	tmpl := s.tmpls[v.VIN]
 	resp := vehicledata.Build(snap, d, v, tmpl, s.cfg.Units, now)
-	writeResponse(w, resp)
+	s.writeResponse(w, resp)
 }
 
 // handleEnroll reads the configured fleet_telemetry_config JSON file and pushes it
@@ -136,22 +136,22 @@ func (s *Server) handleVehicleData(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleEnroll(w http.ResponseWriter, _ *http.Request) {
 	if s.relay == nil {
 		s.log.Warn("enroll requested but command relay is disabled")
-		writeError(w, http.StatusServiceUnavailable, "command_relay_disabled")
+		s.writeError(w, http.StatusServiceUnavailable, "command_relay_disabled")
 		return
 	}
 	payload, err := os.ReadFile(s.enrollFile)
 	if err != nil {
 		s.log.Error("enroll read file failed", "path", s.enrollFile, "err", err)
-		writeError(w, http.StatusInternalServerError, "enroll_file_unreadable")
+		s.writeError(w, http.StatusInternalServerError, "enroll_file_unreadable")
 		return
 	}
 	if err := s.relay.Enroll(payload); err != nil {
 		s.log.Error("enroll failed", "path", s.enrollFile, "err", err)
-		writeError(w, http.StatusBadGateway, err.Error())
+		s.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	s.log.Info("enroll succeeded", "path", s.enrollFile)
-	writeResponse(w, map[string]any{"enrolled": true})
+	s.writeResponse(w, map[string]any{"enrolled": true})
 }
 
 // Health is the readiness verdict served by /healthz.
@@ -280,7 +280,9 @@ func (s *Server) handleDebug(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	enc.Encode(out)
+	if err := enc.Encode(out); err != nil {
+		s.log.Warn("debug state encode failed", "err", err)
+	}
 }
 
 func (s *Server) summary(v config.Vehicle) map[string]any {
@@ -320,15 +322,27 @@ func (s *Server) lookup(r *http.Request) (config.Vehicle, bool) {
 	return config.Vehicle{}, false
 }
 
-func writeResponse(w http.ResponseWriter, payload any) {
+// writeResponse and writeError are methods rather than free functions purely so
+// they can log. An encode failure cannot be reported to the client -- the status
+// line is already on the wire -- so the only options are to log it or to lose
+// it, and losing it means a client that received a truncated body while the
+// gateway reported nothing at all. Two causes are real here: a client that
+// disconnected mid-response (routine, and why this is Debug for the happy-path
+// case) and a value in the store that will not marshal (a bug, and one that only
+// shows up as TeslaMate quietly recording nothing).
+func (s *Server) writeResponse(w http.ResponseWriter, payload any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"response": payload})
+	if err := json.NewEncoder(w).Encode(map[string]any{"response": payload}); err != nil {
+		s.log.Warn("fleetapi response encode failed", "err", err)
+	}
 }
 
-func writeError(w http.ResponseWriter, code int, msg string) {
+func (s *Server) writeError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]any{"response": nil, "error": msg, "error_description": ""})
+	if err := json.NewEncoder(w).Encode(map[string]any{"response": nil, "error": msg, "error_description": ""}); err != nil {
+		s.log.Warn("fleetapi error encode failed", "err", err, "for_error", msg)
+	}
 }
 
 func logRequests(log *slog.Logger) func(http.Handler) http.Handler {
