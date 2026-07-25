@@ -218,7 +218,15 @@ func (c *Consumer) handleV(payload []byte) {
 
 func (c *Consumer) handleConnectivity(payload []byte) {
 	var p connPayload
-	if err := json.Unmarshal(payload, &p); err != nil || p.Vin == "" {
+	// Distinguish the two reasons for dropping this message. A malformed payload
+	// means the upstream shape changed and every connectivity update is being
+	// discarded -- which silently breaks online/asleep/offline detection, so it
+	// must not share a bare `return` with the benign VIN-less case.
+	if err := json.Unmarshal(payload, &p); err != nil {
+		c.log.Warn("zmq connectivity unmarshal failed", "err", err)
+		return
+	}
+	if p.Vin == "" {
 		return
 	}
 	status := "online"

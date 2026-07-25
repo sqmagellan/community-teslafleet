@@ -159,7 +159,11 @@ func (s *Server) WellKnownHandler() http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/x-pem-file")
-		w.Write(pub)
+		if _, err := w.Write(pub); err != nil {
+			// Tesla fetches this to verify domain ownership; a failed write means
+			// enrollment will fail for a reason visible nowhere else.
+			s.log.Warn("well-known public key write failed", "err", err)
+		}
 	})
 	return mux
 }
@@ -246,7 +250,9 @@ func (s *Server) downloadPublic(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Header().Set("Content-Disposition", `attachment; filename="com.tesla.3p.public-key.pem"`)
-	w.Write(pub)
+	if _, err := w.Write(pub); err != nil {
+		s.log.Warn("public key download write failed", "err", err)
+	}
 }
 
 func (s *Server) probe(w http.ResponseWriter, r *http.Request) {
