@@ -219,6 +219,7 @@ func main() {
 	var srv *http.Server
 	if cfg.FleetAPI.Enabled {
 		api := fleetapi.NewServer(st, &cfg, tmpls, relay, cfg.Commands.EnrollFile, log)
+		api.SetIngestHealth(consumer) // /healthz reports the real ingest link
 		router := api.Routes()
 		wssSrv := wss.NewServer(st, &cfg, log)
 		router.Handle("/streaming/*", wssSrv.Handler())
