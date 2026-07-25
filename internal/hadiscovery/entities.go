@@ -454,16 +454,52 @@ func hvacOn(v any) bool {
 
 // pluggedIn derives whether a charge cable is connected.
 //
-// ChargePortLatch is Tesla's authoritative — and only reliable — plug signal:
-// it is discrete and streams both ways (Engaged on plug-in, Disengaged on
-// unplug), so we use nothing else. Every alternative is fragile and has bitten
-// us: Tesla never resets ChargingCableType to CableTypeNone (so OR'ing it pins
-// plugged_in on forever after the first charge), and a Gear/VehicleSpeed
-// "driving" backstop reads fields that stop at a non-zero residual and never
-// reach 0 — which stuck plugged_in *off* every evening after a drive. If the
-// latch has never been reported we report not-plugged rather than guess.
+// ChargePortLatch is the primary signal: it is discrete and streams both ways
+// (Engaged on plug-in, Disengaged on unplug). It stays primary because every
+// alternative is fragile as a *positive* signal and has bitten us: Tesla never
+// resets ChargingCableType to CableTypeNone (so OR'ing it pins plugged_in on
+// forever after the first charge), and a Gear/VehicleSpeed "driving" backstop
+// reads fields that stop at a non-zero residual and never reach 0 — which stuck
+// plugged_in *off* every evening after a drive. If the latch has never been
+// reported we report not-plugged rather than guess.
+//
+// The latch alone is not sufficient, though, because it can go stale in the
+// Engaged position. Observed on a car that had been unplugged for hours:
+// ChargePortLatch=ChargePortLatchEngaged, while DetailedChargeState=Disconnected
+// and ChargePortDoorOpen=false — a shut charge port with no cable in it. The
+// latch had simply never re-streamed. Anything reading charge state and the port
+// door (TeslaMate, for one) correctly said not-plugged while we said plugged.
+//
+// So the latch is only ever VETOED, never overridden, and only when two
+// independent discrete signals agree that nothing is plugged in. See
+// unplugCorroborated.
 func pluggedIn(snap store.Snapshot) bool {
-	return strings.Contains(snap.Str(store.FieldChargePortLatch), "Engaged")
+	if !strings.Contains(snap.Str(store.FieldChargePortLatch), "Engaged") {
+		return false
+	}
+	return !unplugCorroborated(snap)
+}
+
+// unplugCorroborated reports whether two independent signals BOTH state that no
+// cable is present, which is the only thing allowed to overrule an Engaged latch:
+//
+//   - DetailedChargeState is explicitly Disconnected. Every plugged-in state
+//     (Charging, Complete, NoPower, Stopped, Starting) is a different value, so
+//     this is not merely "not charging".
+//   - ChargePortDoorOpen is explicitly false. A cable physically cannot be
+//     seated in a closed port.
+//
+// Both must be PRESENT and unambiguous: an absent field vetoes nothing. That
+// keeps the failure mode "trust the latch" — the same behaviour as before this
+// check existed — rather than "guess from whatever happens to be in the store",
+// which is the mistake that made the earlier cable/gear heuristics unusable.
+func unplugCorroborated(snap store.Snapshot) bool {
+	cs, ok := snap.Field(store.FieldChargeState)
+	if !ok || !strings.EqualFold(store.ChargeStateString(cs.Value), "Disconnected") {
+		return false
+	}
+	doorOpen, ok := snap.Bool(store.FieldChargePortDoorOpen)
+	return ok && !doorOpen
 }
 
 // genericValue normalizes a raw field value for the generic state pass: enum
