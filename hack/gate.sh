@@ -25,6 +25,7 @@
 set -uo pipefail
 
 GO_IMAGE="${GATE_GO_IMAGE:-golang:1.25}"
+LINT_IMAGE="${GATE_LINT_IMAGE:-golangci/golangci-lint:latest}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM_REF="${GATE_UPSTREAM_REF:-upstream-main}"
 
@@ -138,12 +139,16 @@ PYEOF
     grep -E '^Vulnerability|Fixed in|Your code is affected' /tmp/gate-vuln.log | head -20
   fi
 
-  # Advisory only: the upstream tree does not pass a strict linter yet (errcheck
-  # in particular — see the D6 error-handling work). Make this blocking once it
-  # is clean, so it cannot rot.
-  if command -v golangci-lint >/dev/null 2>&1; then
-    (cd "$REPO" && golangci-lint run ./... 2>&1 | head -20) || true
-    printf '  \033[33mINFO\033[0m  golangci-lint output above is ADVISORY (not a gate)\n'
+  # Blocking, and run from a container so it does not depend on a local install
+  # (CI runs the same config). errcheck is on: see .golangci.yml for why the only
+  # exemptions are unactionable Close calls.
+  if docker run --rm -v "$REPO:/src:ro" \
+      -e GOCACHE=/tmp/gc -e GOMODCACHE=/tmp/gm -e GOLANGCI_LINT_CACHE=/tmp/glc \
+      "$LINT_IMAGE" bash -c "cp -a /src /work && cd /work && golangci-lint run ./..." \
+      >/tmp/gate-lint.log 2>&1; then
+    ok "golangci-lint (errcheck enabled)"
+  else
+    bad "golangci-lint (see /tmp/gate-lint.log)"; tail -20 /tmp/gate-lint.log
   fi
 
   stage "container build"
@@ -192,6 +197,32 @@ if [ "$DO_LIVE" = 1 ]; then
       bad "car_type=$ct but VIN position 4 says $want for ...${vin: -6}"
     fi
   done
+
+  # /healthz is now a real readiness verdict, not a hard-coded "ok". A 503 here
+  # means either the ZMQ link is down or an online car has gone silent past
+  # stale_after_seconds — both of which used to be invisible from outside.
+  hz_code=$(curl -s -o /tmp/gate-healthz.json -w '%{http_code}' --max-time 10 "$FLEETAPI/healthz")
+  hz_status=$(jq -r '.status // "missing"' /tmp/gate-healthz.json 2>/dev/null)
+  hz_conn=$(jq -r '.ingest_connected' /tmp/gate-healthz.json 2>/dev/null)
+  hz_age=$(jq -r '.last_ingest_age_s' /tmp/gate-healthz.json 2>/dev/null)
+  if [ "$hz_code" = "200" ] && [ "$hz_status" = "ok" ]; then
+    ok "/healthz ready (ingest_connected=$hz_conn last_ingest_age=${hz_age}s)"
+  elif [ "$hz_status" = "missing" ]; then
+    bad "/healthz did not return the readiness document (http $hz_code) — old build deployed?"
+  else
+    bad "/healthz $hz_code $hz_status: $(jq -r '.reason // "no reason given"' /tmp/gate-healthz.json)"
+  fi
+
+  # Per-VIN last-ingest timestamps must be present, because the alternative
+  # (diffing successive /debug/state responses) silently cannot work: every field
+  # carries an age_s that ticks, so a whole-object diff always looks changed.
+  ts_missing=$(curl -s --max-time 10 "$FLEETAPI/debug/state" \
+    | jq -r '[to_entries[] | select(.value.last_ingest_unix == null) | .key] | length' 2>/dev/null)
+  if [ "${ts_missing:-1}" = "0" ]; then
+    ok "/debug/state exposes last_ingest_unix for every vehicle"
+  else
+    bad "$ts_missing vehicle(s) in /debug/state have no last_ingest_unix"
+  fi
 
   # Our own ingest probe is the only thing that detects a SILENT stall.
   if [ -r "$HEALTH_DIR/teslafleet-ingest.txt" ]; then
