@@ -1,0 +1,33 @@
+# golangci-lint configuration.
+#
+# Deliberately conservative: the goal is a linter that is USEFUL on day one, not
+# one that produces hundreds of findings everybody learns to ignore.
+#
+# errcheck is disabled for now. It is the linter this codebase most needs — the
+# ingest path discards several errors outright — but enabling it today would
+# produce a wall of pre-existing findings and a permanently red build. It gets
+# enabled as part of the error-handling work, at which point the CI lint job
+# should also stop being advisory.
+
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  disable:
+    - errcheck # TODO: enable with the error-handling cleanup
+
+  exclusions:
+    rules:
+      # Test helpers legitimately ignore errors and shadow names for brevity.
+      - path: _test\.go
+        linters:
+          - staticcheck
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    # The tree carries pre-existing gofmt drift (struct field alignment).
+    # Reformatting it wholesale guarantees a conflict on every upstream merge,
+    # so formatting is enforced per-change by CI and hack/gate.sh instead.
+    generated: lax

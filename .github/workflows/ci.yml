@@ -1,0 +1,86 @@
+name: ci
+
+# Upstream only runs CI on v* tags, so `main` ships unverified: the nine
+# workflow runs that exist are all from a single day, and the v0.1.0 one failed.
+# Run on every push and PR instead, so a broken main is visible immediately.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # TODO(supply-chain): pin these to commit SHAs rather than tags. Left as
+      # tags for now because an unverified SHA is worse than a tag — it silently
+      # breaks CI. Enable Dependabot for github-actions and it will pin them.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: gofmt (changed files only)
+        # The tree carries pre-existing formatting drift (struct alignment).
+        # Reformatting it wholesale would conflict on every upstream merge, so
+        # hold only changed files to the standard.
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ]; then base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"; fi
+          changed=$(git diff --name-only "$base" HEAD -- '*.go' | tr '\n' ' ')
+          if [ -z "${changed// /}" ]; then echo "no .go changes"; exit 0; fi
+          echo "checking: $changed"
+          out=$(gofmt -l $changed)
+          if [ -n "$out" ]; then echo "not gofmt-clean:"; echo "$out"; exit 1; fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test (race)
+        run: go test ./... -race -count=1
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    # ADVISORY, not required: the tree does not pass a strict linter yet
+    # (errcheck in particular — several ingest errors are discarded). Flip
+    # continue-on-error off once that work lands so this cannot rot.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build image
+        run: docker build -t community-teslafleet:ci .
