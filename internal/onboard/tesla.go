@@ -99,6 +99,12 @@ func (c *teslaClient) registerPartner(domain string) error {
 }
 
 // authorizeURL builds the user-facing OAuth authorize URL (auth-code flow).
+//
+// Unused today: the onboarding wizard still requires a hand-pasted refresh
+// token. This and exchangeCode are the two halves of the self-service OAuth
+// authorization-code flow, so they are kept deliberately rather than deleted.
+//
+//nolint:unused // unfinished OAuth authorization-code flow, see above
 func (c *teslaClient) authorizeURL(redirectURI, state string) string {
 	q := url.Values{
 		"response_type": {"code"},
@@ -111,6 +117,11 @@ func (c *teslaClient) authorizeURL(redirectURI, state string) string {
 }
 
 // exchangeCode swaps an auth code for tokens; returns the (rotating) refresh token.
+//
+// Unused today: the other half of the unfinished OAuth authorization-code flow.
+// See authorizeURL.
+//
+//nolint:unused // unfinished OAuth authorization-code flow, see above
 func (c *teslaClient) exchangeCode(code, redirectURI string) (string, error) {
 	form := url.Values{
 		"grant_type":    {"authorization_code"},

@@ -65,10 +65,12 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
-    # ADVISORY, not required: the tree does not pass a strict linter yet
-    # (errcheck in particular — several ingest errors are discarded). Flip
-    # continue-on-error off once that work lands so this cannot rot.
-    continue-on-error: true
+    # BLOCKING. errcheck is on and the tree passes it: the discarded errors that
+    # used to make this job unrunnable (recorder flushes, json encodes,
+    # os.Setenv in add-on autodetection) are fixed rather than excluded, so the
+    # only errcheck exemptions left are unactionable Close calls. See
+    # .golangci.yml. gofmt is deliberately NOT part of this job -- pre-existing
+    # formatting drift is held per-change by the gofmt step above instead.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
