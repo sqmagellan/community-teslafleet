@@ -160,8 +160,12 @@ type Vehicle struct {
 	VIN         string `yaml:"vin"`
 	DisplayName string `yaml:"display_name"`
 	Template    string `yaml:"template"` // path to captured vehicle_data template JSON
-	ID          int64  `yaml:"id"`
-	VehicleID   int64  `yaml:"vehicle_id"`
+	// CarType overrides the vehicle_config.car_type that is otherwise derived
+	// from the VIN. Only needed for a model the VIN decoder does not know, or
+	// for a VIN that fails its check digit.
+	CarType   string `yaml:"car_type"`
+	ID        int64  `yaml:"id"`
+	VehicleID int64  `yaml:"vehicle_id"`
 }
 
 // IDString is the decimal string form of the vehicle's ID.

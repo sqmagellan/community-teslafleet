@@ -7,6 +7,7 @@ import (
 
 	"github.com/LasseLegarth/community-teslafleet/internal/config"
 	"github.com/LasseLegarth/community-teslafleet/internal/store"
+	"github.com/LasseLegarth/community-teslafleet/internal/vin"
 )
 
 // Build produces the vehicle_data "response" object for a vehicle. It clones the
@@ -28,6 +29,7 @@ func Build(snap store.Snapshot, d store.Derived, veh config.Vehicle, tmpl *Templ
 	cs := subObj(resp, "charge_state")
 	cls := subObj(resp, "climate_state")
 	vs := subObj(resp, "vehicle_state")
+	vc := subObj(resp, "vehicle_config")
 
 	tsSec := now.Unix()
 	tsMs := now.UnixMilli()
@@ -135,6 +137,22 @@ func Build(snap store.Snapshot, d store.Derived, veh config.Vehicle, tmpl *Templ
 		}
 	}
 	vs["vehicle_name"] = veh.DisplayName
+
+	// ---- vehicle_config ----
+	// car_type is not telemetry: it never changes, and the VIN already states
+	// it. Deriving it removes a per-vehicle file every operator would otherwise
+	// have to hand-maintain, and removes the wrong default (upstream shipped a
+	// hardcoded model3, which silently mislabels every other model downstream in
+	// TeslaMate and anything else consuming vehicle_data).
+	//
+	// Precedence: explicit config override, then the VIN, then whatever the
+	// captured template supplied. The VIN is only used when it passes its check
+	// digit AND names a model we know -- a malformed VIN is not evidence.
+	if veh.CarType != "" {
+		vc["car_type"] = veh.CarType
+	} else if ct := vin.CarType(veh.VIN); ct != "" {
+		vc["car_type"] = ct
+	}
 
 	return resp
 }
