@@ -221,7 +221,7 @@ func (c *Consumer) handleConnectivity(payload []byte) {
 	if err := json.Unmarshal(payload, &p); err != nil || p.Vin == "" {
 		return
 	}
-	status := "online"
+	var status string
 	switch strings.ToUpper(p.Status) {
 	case "DISCONNECTED":
 		status = "offline"
