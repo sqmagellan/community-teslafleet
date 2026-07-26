@@ -402,8 +402,13 @@ func (r *Relay) VehicleData(vin string) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("token: %w", err)
 	}
-	url := fmt.Sprintf("%s/api/1/vehicles/%s/vehicle_data?endpoints=%s", r.fleetAPI, vin, vehicleDataEndpoints)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	// The endpoint list MUST be percent-encoded. Sent with literal semicolons,
+	// Tesla reads only the first entry and silently returns a document containing
+	// charge_state alone -- measured: every other section came back absent, which
+	// looks exactly like a car that reports nothing rather than a malformed request.
+	reqURL := fmt.Sprintf("%s/api/1/vehicles/%s/vehicle_data?endpoints=%s",
+		r.fleetAPI, vin, url.QueryEscape(vehicleDataEndpoints))
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
