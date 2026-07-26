@@ -54,6 +54,7 @@ Current `fix/` branches, in the order they should go upstream:
 | `fix/shutdown-ordering` | wait for the shutdown flush instead of racing exit |
 | `feat/vehicle-data-seed` | gated fetch of the real `vehicle_data` (needs `fix/debug-gate`) |
 | `fix/rediscover-on-reconnect` | generic discovery comes back with the curated kind |
+| `fix/zmq-socket-race` | Stop during reconnect was a data race |
 | `fix/dep-bump` | close three reachable advisories |
 | `fix/ci` | CI on push/PR + blocking linter (depends on `fix/error-handling`) |
 
@@ -349,6 +350,20 @@ clearing it on reconnect without the lock would have introduced a race.
 
 Verified live by restarting the broker: all 196 retained configs came back, every
 one carrying `availability_topic`, with the availability topic back to `online`.
+
+### `fix/zmq-socket-race` — `Stop()` during a reconnect was a data race
+
+`reconnect()` replaces the SUB socket from the ingest goroutine while `Stop()`
+closes it from whichever goroutine is shutting the process down, so the pointer
+itself is shared state. Unguarded that is a data race, and in the worst case a
+double close or the close of a socket the loop is about to `Recv()` on.
+
+Found by CI on a loaded runner, never locally: on a quiet machine the reconnect
+almost always wins, which is the profile of a bug that appears in production
+during a restart and nowhere else. A mutex guards the field, the socket is read
+into a local before the blocking `Recv()`, and every close happens outside the
+lock — closing a zmq socket can block, and doing that under the mutex would let a
+wedged close stall `Stop()`.
 
 ### `fix/dep-bump` — close three reachable advisories
 
