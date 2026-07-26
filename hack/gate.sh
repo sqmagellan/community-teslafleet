@@ -334,6 +334,68 @@ if [ "$DO_LIVE" = 1 ]; then
     ok "no secrets in the container environment (files only)"
   fi
 
+  # ---- Phase 4: vehicle_data gaps, and HA availability ---------------------
+  # is_climate_on was absent from the emulated document entirely, and the two SOC
+  # figures were the same telemetry field published twice.
+  for id in $(printf '%s' "$vehicles" | jq -r '.response[].id' 2>/dev/null); do
+    vd=$(curl -s --max-time 10 "$FLEETAPI/api/1/vehicles/$id/vehicle_data")
+    vin=$(printf '%s' "$vd" | jq -r '.response.vin // ""')
+    # has(), not `//`: is_climate_on is a BOOL and jq's // treats false as empty,
+    # so a present-and-false field would read as absent. (That exact mistake
+    # produced a wrong measurement of ChargePortDoorOpen in phase 2.)
+    if [ "$(printf '%s' "$vd" | jq -r '.response.climate_state | has("is_climate_on")')" = "true" ]; then
+      ok "is_climate_on present for ...${vin: -6} ($(printf '%s' "$vd" | jq -r '.response.climate_state.is_climate_on'))"
+    else
+      bad "is_climate_on absent from climate_state for ...${vin: -6}"
+    fi
+    lvl=$(printf '%s' "$vd" | jq -r '.response.charge_state.battery_level // -1')
+    usable=$(printf '%s' "$vd" | jq -r '.response.charge_state.usable_battery_level // -1')
+    if [ "$lvl" -lt 0 ] || [ "$usable" -lt 0 ]; then
+      skip "SOC pair for ...${vin: -6} (no SOC telemetry yet)"
+    elif [ "$usable" -le "$lvl" ]; then
+      ok "usable_battery_level $usable <= battery_level $lvl for ...${vin: -6}"
+    else
+      bad "usable_battery_level $usable > battery_level $lvl for ...${vin: -6}"
+    fi
+  done
+
+  # Retained state + an availability topic. Checked at the BROKER, because the
+  # retain flag is a property of what the broker stored, not of anything visible
+  # in our own config: subscribing normally would see the 2s republish either way.
+  MOSQ=${GATE_MOSQUITTO:-teslamate-mosquitto-1}
+  ha_base=$(printf '%s\n' "$env_dump" | sed -n 's/^TGW_HA_STATE_TOPIC_BASE=//p')
+  ha_base=${ha_base:-tgw}
+  if ! docker ps --format '{{.Names}}' | grep -qx "$MOSQ"; then
+    skip "MQTT checks (broker container $MOSQ not running)"
+  else
+    retained=$(docker exec "$MOSQ" mosquitto_sub -h localhost -v --retained-only -W 3 \
+      -t "$ha_base/#" -t "homeassistant/#" 2>/dev/null)
+    avail=$(printf '%s\n' "$retained" | sed -n "s|^$ha_base/availability ||p" | tail -1)
+    if [ "$avail" = "online" ]; then
+      ok "availability topic $ha_base/availability retained as online"
+    else
+      bad "availability topic $ha_base/availability = '${avail:-absent}', want online"
+    fi
+    st_count=$(printf '%s\n' "$retained" | grep -cE "^$ha_base/[^/ ]+/state " || true)
+    if [ "$st_count" -gt 0 ]; then
+      ok "state published retained ($st_count vehicle topic(s) held by the broker)"
+    else
+      bad "no retained state topic under $ha_base/ — HA starts blank after a restart"
+    fi
+    # Every discovery config WE published must name the availability topic; one
+    # that does not keeps showing its last value after the gateway dies.
+    no_avail=$(printf '%s\n' "$retained" | grep '^homeassistant/' | grep 'community-teslafleet' \
+      | grep -vc 'availability_topic' || true)
+    our_cfgs=$(printf '%s\n' "$retained" | grep -c 'community-teslafleet' || true)
+    if [ "$our_cfgs" -eq 0 ]; then
+      bad "no discovery configs of ours are retained under homeassistant/"
+    elif [ "$no_avail" -eq 0 ]; then
+      ok "all $our_cfgs retained discovery configs carry availability_topic"
+    else
+      bad "$no_avail of $our_cfgs retained discovery configs lack availability_topic"
+    fi
+  fi
+
   if [ -x /home/ames/homelab-maint/custom-guard.py ]; then
     if /home/ames/homelab-maint/custom-guard.py check >/tmp/gate-guard.log 2>&1; then
       ok "custom-guard: all customizations present"
