@@ -90,6 +90,26 @@ func SentryEnabled(v any) bool {
 	return true
 }
 
+// HvacOn reports whether an HvacPower value means the climate system is running,
+// plus whether the value could be classified at all. An unrecognized value returns
+// ok=false so a caller can leave the field absent instead of publishing a confident
+// "off" — HvacPowerStateUnknown is what a car sends when it does not know either.
+//
+// Preconditioning counts as on: the compressor is running and the pack is being
+// heated or cooled, which is what every consumer of "is climate on" is asking about.
+func HvacOn(v any) (bool, bool) {
+	if b, ok := ToBool(v); ok {
+		return b, true
+	}
+	switch strings.TrimPrefix(asString(v), "HvacPowerState") {
+	case "On", "Precondition", "OverheatProtect":
+		return true, true
+	case "Off":
+		return false, true
+	}
+	return false, false
+}
+
 // GearString normalizes a decoded Gear value to "P"/"D"/"R"/"N" or "".
 // Handles plain ("D"), prefixed ("ShiftStateD") and numeric encodings.
 func GearString(v any) string {

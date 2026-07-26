@@ -65,9 +65,29 @@ func Build(snap store.Snapshot, d store.Derived, veh config.Vehicle, tmpl *Templ
 	ds["power"] = drivePower(snap)
 
 	// ---- charge_state ----
-	if soc, ok := snap.Num(store.FieldSoc); ok {
-		cs["battery_level"] = int(soc)
-		cs["usable_battery_level"] = int(soc)
+	// battery_level and usable_battery_level are DIFFERENT numbers on a real car:
+	// the usable figure sits below the displayed one when the pack is cold, and
+	// TeslaMate uses the gap to show the blue snowflake (teslamate#321). Publishing
+	// one field as both made that gap structurally always zero.
+	//
+	// Telemetry carries two SOC fields, Soc and BatteryLevel. Measured on two cars
+	// (2026-07-25), Soc sits consistently just below BatteryLevel — the ordering the
+	// Fleet API requires of usable vs displayed — so Soc maps to
+	// usable_battery_level and BatteryLevel to battery_level. That is an INFERENCE
+	// from ordering, not from Tesla's field docs, which do not distinguish the two;
+	// the min() below means even a reversed reading cannot emit usable > displayed,
+	// which is the only relation a consumer actually depends on. When just one field
+	// is present it is used for both, which is what the single-field version did.
+	soc, hasSoc := snap.Num(store.FieldSoc)
+	lvl, hasLvl := snap.Num(store.FieldBatteryLevel)
+	switch {
+	case hasSoc && hasLvl:
+		cs["battery_level"] = int(lvl)
+		cs["usable_battery_level"] = int(min(soc, lvl))
+	case hasLvl:
+		cs["battery_level"], cs["usable_battery_level"] = int(lvl), int(lvl)
+	case hasSoc:
+		cs["battery_level"], cs["usable_battery_level"] = int(soc), int(soc)
 	}
 	if r, ok := snap.Num(store.FieldRatedRange); ok {
 		mi := round1(RangeToMiles(r, units.RangeInput))
@@ -107,6 +127,15 @@ func Build(snap store.Snapshot, d store.Derived, veh config.Vehicle, tmpl *Templ
 	}
 	if t, ok := snap.Num(store.FieldOutsideTemp); ok {
 		cls["outside_temp"] = round1(t)
+	}
+	// is_climate_on was absent from the emulated document entirely, because the
+	// captured template ships an empty climate_state and nothing overlaid it — so
+	// every consumer read "no climate data" while HvacPower was streaming the whole
+	// time. Omitted rather than defaulted when the enum cannot be classified.
+	if v, ok := snap.Field(store.FieldIsClimateOn); ok {
+		if on, ok := store.HvacOn(v.Value); ok {
+			cls["is_climate_on"] = on
+		}
 	}
 
 	// ---- vehicle_state ----

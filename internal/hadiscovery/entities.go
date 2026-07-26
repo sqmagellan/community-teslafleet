@@ -445,11 +445,14 @@ func buildState(snap store.Snapshot, d store.Derived, units config.Units) map[st
 }
 
 // hvacOn maps an HvacPower enum ("HvacPowerStateOn"/"...Off") or bool to on/off.
+//
+// Delegates to store.HvacOn so the HA entity and the emulated vehicle_data's
+// climate_state.is_climate_on can never disagree about the same enum. An
+// unclassifiable value reads as off here because a binary_sensor has no third
+// state; the vehicle_data mapper omits the key instead.
 func hvacOn(v any) bool {
-	if b, ok := store.ToBool(v); ok {
-		return b
-	}
-	return strings.EqualFold(normalizeEnum(asStr(v)), "On")
+	on, _ := store.HvacOn(v)
+	return on
 }
 
 // pluggedIn derives whether a charge cable is connected.
