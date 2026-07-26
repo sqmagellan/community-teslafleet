@@ -33,6 +33,10 @@ GATEWAY="${GATE_GATEWAY_CONTAINER:-teslafleet-gateway-1}"
 TELEMETRY="${GATE_TELEMETRY_CONTAINER:-teslafleet-fleet-telemetry-1}"
 FLEETAPI="${GATE_FLEETAPI_URL:-http://127.0.0.1:4460}"
 HEALTH_DIR="${GATE_HEALTH_DIR:-/home/ames/home-assistant/config/ames-health}"
+# /debug/state is gated (default off upstream, token-protected here), so the live
+# checks have to authenticate. Same file the container mounts read-only.
+DEBUG_TOKEN_FILE="${GATE_DEBUG_TOKEN_FILE:-/home/ames/.teslafleet-debug-token}"
+DEBUG_TOKEN="$(cat "$DEBUG_TOKEN_FILE" 2>/dev/null || true)"
 
 DO_STATIC=1
 DO_LIVE=0
@@ -216,7 +220,7 @@ if [ "$DO_LIVE" = 1 ]; then
   # Per-VIN last-ingest timestamps must be present, because the alternative
   # (diffing successive /debug/state responses) silently cannot work: every field
   # carries an age_s that ticks, so a whole-object diff always looks changed.
-  ts_missing=$(curl -s --max-time 10 "$FLEETAPI/debug/state" \
+  ts_missing=$(curl -s --max-time 10 -H "X-Debug-Token: $DEBUG_TOKEN" "$FLEETAPI/debug/state" \
     | jq -r '[to_entries[] | select(.value.last_ingest_unix == null) | .key] | length' 2>/dev/null)
   if [ "${ts_missing:-1}" = "0" ]; then
     ok "/debug/state exposes last_ingest_unix for every vehicle"
@@ -260,6 +264,47 @@ if [ "$DO_LIVE" = 1 ]; then
     fi
   else
     skip "ZMQ resilience test (pass --zmq-restart; briefly interrupts ingest)"
+  fi
+
+  # The gate is off by default upstream; here it must be ON (the probe and these
+  # checks depend on it) and it must REJECT a request with no token. A 200
+  # without a token means the token was silently not loaded.
+  code_no_token=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$FLEETAPI/debug/state")
+  code_token=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "X-Debug-Token: $DEBUG_TOKEN" "$FLEETAPI/debug/state")
+  if [ "$code_token" = "200" ] && [ "$code_no_token" = "403" ]; then
+    ok "/debug/state is token-gated (403 without, 200 with)"
+  elif [ "$code_token" = "200" ] && [ "$code_no_token" = "200" ]; then
+    bad "/debug/state served WITHOUT a token — TGW_DEBUG_TOKEN_FILE not loaded?"
+  else
+    bad "/debug/state gate unexpected: no-token=$code_no_token with-token=$code_token"
+  fi
+
+  # The onboarding wizard should not be listening at all (S4).
+  if curl -s -o /dev/null --max-time 3 http://127.0.0.1:8099/ 2>/dev/null; then
+    bad "onboarding wizard is still answering on 127.0.0.1:8099"
+  else
+    ok "onboarding wizard is not listening on 8099"
+  fi
+
+  # Hardening flags must actually be applied to the RUNNING container, not just
+  # present in the compose file.
+  ro=$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "$GATEWAY" 2>/dev/null)
+  caps=$(docker inspect -f '{{.HostConfig.CapDrop}}' "$GATEWAY" 2>/dev/null)
+  nnp=$(docker inspect -f '{{.HostConfig.SecurityOpt}}' "$GATEWAY" 2>/dev/null)
+  if [ "$ro" = "true" ] && [ "$caps" = "[ALL]" ] && [ "${nnp#*no-new-privileges}" != "$nnp" ]; then
+    ok "container hardening applied (read_only, cap_drop ALL, no-new-privileges)"
+  else
+    bad "container hardening NOT applied: read_only=$ro cap_drop=$caps security_opt=$nnp"
+  fi
+
+  # A secret in the environment is the thing S1 removed; catch it coming back.
+  leaked=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$GATEWAY" 2>/dev/null \
+    | grep -E '^TGW_(TESLA_CLIENT_SECRET|TESLA_REFRESH_TOKEN|ONBOARD_PASSWORD|HA_PASSWORD|DEBUG_TOKEN)=.' \
+    | cut -d= -f1 | tr '\n' ' ')
+  if [ -z "$leaked" ]; then
+    ok "no secrets in the container environment (files only)"
+  else
+    bad "secret(s) back in the container environment: $leaked"
   fi
 
   if [ -x /home/ames/homelab-maint/custom-guard.py ]; then
