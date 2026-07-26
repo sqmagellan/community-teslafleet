@@ -37,7 +37,22 @@ type Config struct {
 	Recording     Recording `yaml:"recording"`
 	Onboard       Onboard   `yaml:"onboard"`
 	Stream        Stream    `yaml:"stream"`
+	Debug         Debug     `yaml:"debug"`
 	LogLevel      string    `yaml:"log_level"`
+}
+
+// Debug controls the diagnostic endpoint. Off by default, because /debug/state is
+// the most sensitive thing this process serves: it dumps every stored telemetry
+// field, which includes precise GPS, the destination of the active route and the
+// odometer. That is a live location feed for a named vehicle, available to
+// anything that can reach the port.
+type Debug struct {
+	// StateEnabled exposes GET /debug/state. When false the route returns 404.
+	StateEnabled bool `yaml:"state_enabled"`
+	// Token, if set, must be presented as `Authorization: Bearer <token>` or
+	// `X-Debug-Token`. Empty means the endpoint is open once enabled — fine
+	// behind a loopback bind, not fine otherwise.
+	Token string `yaml:"token"`
 }
 
 // Stream runs the upstream Tesla components (fleet-telemetry, and the
@@ -452,6 +467,8 @@ func applyEnv(c *Config) {
 	setStr(&c.Ingest.Namespace, "TGW_INGEST_NAMESPACE")
 	setStr(&c.HTTP.Listen, "TGW_HTTP_LISTEN")
 	setBool(&c.FleetAPI.Enabled, "TGW_FLEETAPI_ENABLED")
+	setBool(&c.Debug.StateEnabled, "TGW_DEBUG_STATE_ENABLED")
+	setStr(&c.Debug.Token, "TGW_DEBUG_TOKEN")
 	setBool(&c.HA.Enabled, "TGW_HA_ENABLED")
 	setStr(&c.HA.Broker, "TGW_HA_BROKER")
 	setStr(&c.HA.Username, "TGW_HA_USERNAME")

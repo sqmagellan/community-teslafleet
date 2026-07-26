@@ -4,6 +4,7 @@
 package fleetapi
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -246,7 +247,43 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-func (s *Server) handleDebug(w http.ResponseWriter, _ *http.Request) {
+// debugAllowed enforces the /debug/state gate, and reports whether the handler
+// should continue. It has already written the response when it returns false.
+//
+// A disabled endpoint answers 404, not 403: a 403 confirms the endpoint exists
+// and is worth attacking, and "not found" is also simply true of a route that is
+// switched off.
+//
+// The token is accepted from a header only, never a query parameter. A query
+// parameter would be written into this server's own request log — the line that
+// exists to be safe to read — and into the logs of anything proxying it.
+func (s *Server) debugAllowed(w http.ResponseWriter, r *http.Request) bool {
+	if !s.cfg.Debug.StateEnabled {
+		http.NotFound(w, r)
+		return false
+	}
+	want := s.cfg.Debug.Token
+	if want == "" {
+		return true
+	}
+	got := r.Header.Get("X-Debug-Token")
+	if got == "" {
+		got = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	// Constant time: the comparison is against a shared secret, and a length or
+	// prefix oracle is exactly what makes one guessable.
+	if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+		s.log.Warn("rejected /debug/state request", "remote_addr", r.RemoteAddr, "had_token", got != "")
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {
+	if !s.debugAllowed(w, r) {
+		return
+	}
 	now := s.store.Now()
 	out := map[string]any{}
 	for _, v := range s.effectiveVehicles() {
