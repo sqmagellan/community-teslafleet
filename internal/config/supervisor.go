@@ -58,12 +58,25 @@ func DetectSupervisorMQTT() {
 	if port == 0 {
 		port = 1883
 	}
-	os.Setenv("TGW_HA_BROKER", fmt.Sprintf("%s://%s:%d", scheme, out.Data.Host, port))
-	if out.Data.Username != "" {
-		os.Setenv("TGW_HA_USERNAME", out.Data.Username)
+	// These Setenv calls ARE the output of this function -- the normal env load
+	// reads them back. If one fails the add-on silently starts with no broker and
+	// the user sees "MQTT not configured" having configured nothing wrong, so a
+	// failure has to be loud rather than best-effort.
+	setenv := func(k, v string) bool {
+		if err := os.Setenv(k, v); err != nil {
+			slog.Error("failed to set auto-detected MQTT env var", "key", k, "err", err)
+			return false
+		}
+		return true
 	}
-	if out.Data.Password != "" {
-		os.Setenv("TGW_HA_PASSWORD", out.Data.Password)
+	if !setenv("TGW_HA_BROKER", fmt.Sprintf("%s://%s:%d", scheme, out.Data.Host, port)) {
+		return
+	}
+	if out.Data.Username != "" && !setenv("TGW_HA_USERNAME", out.Data.Username) {
+		return
+	}
+	if out.Data.Password != "" && !setenv("TGW_HA_PASSWORD", out.Data.Password) {
+		return
 	}
 	slog.Info("auto-configured MQTT from HA Supervisor", "host", out.Data.Host, "port", port, "ssl", out.Data.SSL)
 }

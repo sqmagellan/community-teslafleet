@@ -20,6 +20,29 @@ type Recorder struct {
 	w        *bufio.Writer
 	size     int64
 	log      *slog.Logger
+	closed   bool
+	failing  bool // last write/flush failed; used to log transitions, not every tick
+}
+
+// note reports a write or flush failure, logging only when the state CHANGES.
+//
+// bufio.Writer keeps its first error sticky, so a full disk or a closed file
+// makes every subsequent call fail too. Logging each one would emit a line per
+// telemetry field -- thousands a minute -- and bury the first failure, which is
+// the only one that says anything. So: one line when recording breaks, one when
+// it recovers.
+func (r *Recorder) note(op string, err error) {
+	if err == nil {
+		if r.failing {
+			r.failing = false
+			r.log.Info("telemetry recording recovered", "path", r.path)
+		}
+		return
+	}
+	if !r.failing {
+		r.failing = true
+		r.log.Error("telemetry recording is failing", "op", op, "path", r.path, "err", err)
+	}
 }
 
 type line struct {
@@ -72,8 +95,19 @@ func (r *Recorder) Record(vin, field string, value any) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	n, _ := r.w.Write(b)
-	r.w.WriteByte('\n')
+	if r.closed {
+		return
+	}
+	n, err := r.w.Write(b)
+	if err != nil {
+		r.note("write", err)
+		return
+	}
+	if err := r.w.WriteByte('\n'); err != nil {
+		r.note("write", err)
+		return
+	}
+	r.note("write", nil)
 	r.size += int64(n) + 1
 	if r.size >= r.maxBytes {
 		r.rotate()
@@ -81,8 +115,12 @@ func (r *Recorder) Record(vin, field string, value any) {
 }
 
 func (r *Recorder) rotate() {
-	r.w.Flush()
-	r.f.Close()
+	// Flush before rotating or the buffered tail of the old file is dropped on
+	// the floor, which is exactly the data someone reviewing a drive wants.
+	r.note("flush", r.w.Flush())
+	if err := r.f.Close(); err != nil {
+		r.log.Warn("recorder close before rotate failed", "path", r.path, "err", err)
+	}
 	_ = os.Rename(r.path, r.path+".1") // keep one backup
 	f, err := os.OpenFile(r.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -92,6 +130,7 @@ func (r *Recorder) rotate() {
 	r.f = f
 	r.w = bufio.NewWriter(f)
 	r.size = 0
+	r.failing = false // a fresh file and a fresh writer: no sticky error
 }
 
 func (r *Recorder) flushLoop() {
@@ -99,7 +138,13 @@ func (r *Recorder) flushLoop() {
 	defer t.Stop()
 	for range t.C {
 		r.mu.Lock()
-		r.w.Flush()
+		if r.closed {
+			// Stop ticking after Close. Flushing a closed file can only fail, so
+			// the old unchecked loop ran forever discarding an error every 2s.
+			r.mu.Unlock()
+			return
+		}
+		r.note("flush", r.w.Flush())
 		r.mu.Unlock()
 	}
 }
@@ -110,6 +155,17 @@ func (r *Recorder) Close() {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.w.Flush()
-	r.f.Close()
+	if r.closed {
+		return
+	}
+	r.closed = true
+	// This flush is the one that matters: it is the only thing standing between
+	// a clean shutdown and losing the buffered tail, so report it even though
+	// there is nothing left to retry with.
+	if err := r.w.Flush(); err != nil {
+		r.log.Error("recorder final flush failed — buffered telemetry was lost", "path", r.path, "err", err)
+	}
+	if err := r.f.Close(); err != nil {
+		r.log.Warn("recorder close failed", "path", r.path, "err", err)
+	}
 }
