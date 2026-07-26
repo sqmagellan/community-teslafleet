@@ -39,5 +39,5 @@ linters:
 # nobody is otherwise touching). Reformatting it wholesale guarantees a conflict
 # on every future upstream merge, and leaving gofmt enabled here would mean this
 # whole job can never be a required check. Formatting is instead enforced
-# PER CHANGE -- the CI gofmt step and hack/gate.sh both hold only the files a
-# commit touches, and gate.sh specifically asserts a change adds no new drift.
+# PER CHANGE -- the CI gofmt step holds only the files a commit touches, so a
+# change is required not to ADD drift without being required to fix inherited drift.
