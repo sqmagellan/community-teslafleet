@@ -49,6 +49,8 @@ Current `fix/` branches, in the order they should go upstream:
 | `fix/token-cache-validation` | a cached refresh token satisfies validation |
 | `fix/log-redaction` | keep credentials out of the request log |
 | `fix/debug-gate` | `/debug/state` off by default, token-gated when on |
+| `fix/vehicle-data-gaps` | publish `is_climate_on`; stop reporting one SOC as two |
+| `feat/ha-availability` | retained state + an availability (LWT) topic |
 | `fix/dep-bump` | close three reachable advisories |
 | `fix/ci` | CI on push/PR + blocking linter (depends on `fix/error-handling`) |
 
@@ -222,6 +224,55 @@ Now opt-in (`debug.state_enabled`, default false) with an optional shared secret
 endpoint exists. The token comes from `X-Debug-Token` or `Authorization: Bearer`
 and deliberately **not** from a query parameter, which would be written into this
 server's own request log. The comparison is constant time.
+
+### `fix/vehicle-data-gaps` — `is_climate_on`, and one SOC reported as two
+
+Two holes in the emulated `vehicle_data`, both filled from telemetry the gateway
+already receives — no extra stream config, no API call.
+
+`climate_state.is_climate_on` was **absent from the document entirely**: the
+captured template ships an empty `climate_state`, the mapper overlaid only the two
+temperatures, and so every consumer saw "no climate data" while `HvacPower`
+streamed the whole time. It is now overlaid, and *omitted* rather than defaulted to
+`false` when the enum cannot be classified — `HvacPowerStateUnknown` means the car
+does not know either, and a confident `false` is worse than a missing key.
+
+`battery_level` and `usable_battery_level` were both `Soc`. On a real car the
+usable figure sits below the displayed one when the pack is cold, and TeslaMate
+uses that gap to show the blue snowflake (teslamate#321) — publishing one value as
+both made the gap structurally always zero. Telemetry carries two SOC fields:
+measured on two cars, `Soc` sits consistently just below `BatteryLevel`, which is
+the ordering the Fleet API requires of usable vs displayed, so `Soc` maps to
+`usable_battery_level` and `BatteryLevel` to `battery_level`. That mapping is an
+**inference from ordering**, not from Tesla's field docs, which do not distinguish
+the two; the pair is emitted through `min()` so even a reversed reading cannot
+produce `usable > displayed`, which is the only relation a consumer depends on.
+Either field alone is still used for both.
+
+`store.HvacOn` becomes the single place that decides what an `HvacPower` value
+means, and `hadiscovery.hvacOn` delegates to it, so the HA binary_sensor and the
+emulated document cannot disagree about the same enum. Side effect worth naming in
+the PR: preconditioning now reads as climate-on in HA too, which it should.
+
+### `feat/ha-availability` — retained state plus an availability topic
+
+Two halves of one fix; neither is correct alone.
+
+The gateway registers a Last Will on `<state_topic_base>/availability` and every
+discovery config — curated, generic and command — points at it, so when the
+gateway dies without a clean disconnect the broker publishes `offline` and HA marks
+the entities *unavailable* instead of leaving them showing whatever value happened
+to be last. A clean `DISCONNECT` **suppresses the will by protocol**, so `Stop()`
+publishes `offline` itself: without that, the tidy shutdown path is the one that
+lies. Verified both ways against the broker — `docker compose stop` → `offline`,
+`docker kill` → `offline`, start → `online`.
+
+State was published unretained, so a broker or HA restart left every gateway
+entity blank until the next tick. It is now retained — which is only safe *because*
+of the availability topic, since a retained value from a dead gateway would
+otherwise look current indefinitely. The retained availability payload matters in
+the reverse order too: an HA that starts while the gateway is down learns that
+immediately rather than trusting retained state.
 
 ### `fix/dep-bump` — close three reachable advisories
 
