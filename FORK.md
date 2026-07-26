@@ -279,10 +279,14 @@ merge — which is the goal.
 
 The container runs as uid 65532 (distroless nonroot). A credential file owned by
 another uid with mode 0600 is therefore unreadable to it, and because config load
-aborts when a `*_FILE` path cannot be read, the result is a restart loop. Either
-grant the container's gid read access (`chgrp 65532` + `chmod 640`) or leave the
-value inline — do not "fix" it by making the file world-readable without deciding
-that deliberately.
+aborts when a `*_FILE` path cannot be read, the result is a restart loop rather
+than a degraded start. Grant the container's gid read access — `chgrp 65532` plus
+`chmod 640`, which keeps the file out of reach of other users while never making it
+world-readable — or leave the value inline. Do not "fix" it by making the file
+world-readable without deciding that deliberately.
+
+`/data` is owned by 65532 as well, so pointing the container at a different uid is
+not an alternative: every `state.json` and refresh-token write would start failing.
 
 ## Publishing
 
