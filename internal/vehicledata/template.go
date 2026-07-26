@@ -63,10 +63,7 @@ func defaultTemplate() []byte {
 			"gui_24_hour_time": true,
 			"show_range_units": true
 		},
-		"vehicle_config": {
-			"car_type": "model3",
-			"trim_badging": "74d"
-		},
+		"vehicle_config": {},
 		"vehicle_state": {
 			"software_update": {"status": "", "download_perc": 0, "install_perc": 0}
 		}
