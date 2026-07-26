@@ -58,6 +58,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          # check-latest matters here more than anywhere else: without it the
+          # runner installs the EXACT patch named in go.mod, and scanning against
+          # a stale toolchain reports every stdlib advisory fixed since as
+          # reachable. The image is built on the current patch release, so scan
+          # what actually ships.
+          check-latest: true
       - name: govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
