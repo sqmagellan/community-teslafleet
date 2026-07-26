@@ -71,12 +71,8 @@ func (p *Publisher) Start() error {
 		SetConnectRetry(true).
 		SetConnectRetryInterval(5 * time.Second).
 		SetOnConnectHandler(func(c paho.Client) {
-			// Re-announce on every (re)connect so retained discovery survives a broker
-			// restart. Clearing announced makes ensureAnnounced re-publish for all
-			// currently-known vehicles (configured + already auto-discovered).
-			p.annMu.Lock()
-			p.announced = map[string]bool{}
-			p.annMu.Unlock()
+			// Re-announce on every (re)connect so discovery survives a broker restart.
+			p.resetAnnounced()
 			for _, v := range p.effectiveVehicles() {
 				p.ensureAnnounced(v)
 			}
@@ -141,6 +137,42 @@ func (p *Publisher) effectiveVehicles() []config.Vehicle {
 // ensureAnnounced publishes a vehicle's device-level discovery (curated + command
 // entities) exactly once per (re)connect. Safe to call from both the on-connect
 // callback and the publishState loop.
+// resetAnnounced forgets what has been announced, so the next publish cycle
+// re-announces everything for every currently-known vehicle.
+//
+// Both maps, not just announced: discovery configs live on the broker as retained
+// messages, and when the broker loses them (a fresh persistence database, a
+// replaced container, retained messages cleared by hand) the curated entities came
+// back on the next reconnect while the generic per-field ones did not — they were
+// published once per process, so a diagnostic entity could stay missing from Home
+// Assistant until someone happened to restart the gateway. Same failure, two
+// different recovery times, for no reason a user could see.
+func (p *Publisher) resetAnnounced() {
+	p.annMu.Lock()
+	defer p.annMu.Unlock()
+	p.announced = map[string]bool{}
+	p.discovered = map[string]map[string]bool{}
+}
+
+// fieldDiscovered reports whether generic discovery has been published for one
+// telemetry field, and markFieldDiscovered records that it has. Both take annMu
+// because resetAnnounced runs on the MQTT client's connect callback while these
+// run on the publish ticker.
+func (p *Publisher) fieldDiscovered(vin, field string) bool {
+	p.annMu.Lock()
+	defer p.annMu.Unlock()
+	return p.discovered[vin][field]
+}
+
+func (p *Publisher) markFieldDiscovered(vin, field string) {
+	p.annMu.Lock()
+	defer p.annMu.Unlock()
+	if p.discovered[vin] == nil {
+		p.discovered[vin] = map[string]bool{}
+	}
+	p.discovered[vin][field] = true
+}
+
 func (p *Publisher) ensureAnnounced(v config.Vehicle) {
 	p.annMu.Lock()
 	if p.announced[v.VIN] {
@@ -280,21 +312,16 @@ func (p *Publisher) publishState() {
 // field present in snap that is not covered by a curated entity and not yet
 // discovered for this VIN. Each field is published exactly once.
 func (p *Publisher) discoverNewFields(v config.Vehicle, snap store.Snapshot) {
-	seen := p.discovered[v.VIN]
-	if seen == nil {
-		seen = map[string]bool{}
-		p.discovered[v.VIN] = seen
-	}
 	dev := p.deviceInfo(v)
 	origin := map[string]any{"name": "community-teslafleet"}
 	for name, fv := range snap.Fields {
-		if seen[name] || p.covered[name] {
+		if p.fieldDiscovered(v.VIN, name) || p.covered[name] {
 			continue
 		}
 		// Skip dict/composite values that have no scalar rendering (the curated
 		// composites already expose their sub-values; any other dict is noise).
 		if _, isMap := fv.Value.(map[string]any); isMap {
-			seen[name] = true
+			p.markFieldDiscovered(v.VIN, name)
 			continue
 		}
 		component, cfg := p.genericDiscoveryConfig(v, name, fv.Value, dev, origin)
@@ -309,7 +336,7 @@ func (p *Publisher) discoverNewFields(v config.Vehicle, snap store.Snapshot) {
 			p.log.Error("generic discovery publish failed", "topic", topic, "err", tok.Error())
 			continue
 		}
-		seen[name] = true
+		p.markFieldDiscovered(v.VIN, name)
 		p.log.Debug("generic discovery published", "vin", v.VIN, "field", name)
 	}
 }
