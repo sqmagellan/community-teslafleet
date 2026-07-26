@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-zeromq/zmq4"
@@ -27,10 +28,18 @@ type Consumer struct {
 	store    *store.Store
 	rec      *recorder.Recorder // optional JSONL recorder (may be nil)
 	log      *slog.Logger
-	sub      zmq4.Socket
 	ctx      context.Context
 	cancel   context.CancelFunc
 	seenVINs map[string]bool // first-record breadcrumb (loop goroutine only)
+
+	// mu guards sub. The socket is REPLACED on every reconnect, by the ingest
+	// goroutine, while Stop() closes it from whichever goroutine is shutting the
+	// process down -- so the pointer itself is shared state. Unguarded it is a
+	// data race that the detector reports the moment a stop lands during a
+	// reconnect, and in the worst case a double close or a close of the socket
+	// the loop is about to Recv() on.
+	mu  sync.Mutex
+	sub zmq4.Socket
 }
 
 type vPayload struct {
@@ -94,7 +103,7 @@ func (c *Consumer) dial() error {
 		_ = sub.Close()
 		return err
 	}
-	c.sub = sub
+	c.setSocket(sub)
 	c.log.Info("zmq ingest connected", "addr", c.addr)
 	return nil
 }
@@ -102,10 +111,7 @@ func (c *Consumer) dial() error {
 // reconnect tears down the faulted socket and re-dials with backoff. Returns
 // false if the context was cancelled while reconnecting.
 func (c *Consumer) reconnect() bool {
-	if c.sub != nil {
-		_ = c.sub.Close()
-		c.sub = nil
-	}
+	c.closeSocket()
 	backoff := time.Second
 	for {
 		if c.ctx.Err() != nil {
@@ -128,16 +134,52 @@ func (c *Consumer) reconnect() bool {
 	}
 }
 
+// setSocket publishes a freshly dialled socket, closing any predecessor. The
+// close happens OUTSIDE the lock: closing a zmq socket can block, and a blocked
+// close while holding mu would stall Stop().
+func (c *Consumer) setSocket(s zmq4.Socket) {
+	c.mu.Lock()
+	old := c.sub
+	c.sub = s
+	c.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+}
+
+// closeSocket closes the current socket and clears it, so a subsequent close is
+// a no-op rather than a double close.
+func (c *Consumer) closeSocket() {
+	c.mu.Lock()
+	old := c.sub
+	c.sub = nil
+	c.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+}
+
+// socket returns the current socket, or nil once it has been closed. Callers do
+// their blocking Recv() on the returned value, never on the field.
+func (c *Consumer) socket() zmq4.Socket {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sub
+}
+
 func (c *Consumer) Stop() {
 	c.cancel()
-	if c.sub != nil {
-		_ = c.sub.Close()
-	}
+	c.closeSocket()
 }
 
 func (c *Consumer) loop() {
 	for {
-		msg, err := c.sub.Recv()
+		sock := c.socket()
+		if sock == nil {
+			// Stop() closed and cleared the socket while we were in flight.
+			return
+		}
+		msg, err := sock.Recv()
 		if err != nil {
 			if c.ctx.Err() != nil {
 				return
