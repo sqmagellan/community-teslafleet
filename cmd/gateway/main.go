@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -50,6 +51,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Goroutines whose LAST action happens at shutdown. Registered here, before any
+	// other defer, so the wait runs last — after the deferred Stop()/Close() calls.
+	var bg sync.WaitGroup
+	defer waitBackground(&bg, log)
 
 	// All-in-one mode (HA add-on): run fleet-telemetry — and the vehicle-command
 	// proxy when commands are enabled — as supervised child processes, and ingest
@@ -114,7 +120,11 @@ func main() {
 		} else if n > 0 {
 			log.Info("state snapshot restored", "path", p, "vehicles", n)
 		}
-		go st.Persist(ctx, p, 30*time.Second, log)
+		bg.Add(1)
+		go func() {
+			defer bg.Done()
+			st.Persist(ctx, p, 30*time.Second, log)
+		}()
 	}
 
 	// Load per-VIN templates (captured vehicle_data). Missing template → skeleton.
@@ -250,6 +260,29 @@ func main() {
 	if sup != nil {
 		log.Info("waiting for supervised processes to stop")
 		sup.Wait()
+	}
+}
+
+// waitBackground waits for goroutines that flush something on the way out —
+// today just the state snapshot that store.Persist writes when ctx is cancelled.
+// It was started with a bare `go` and never waited on, so main returned and the
+// process exited while that save was still in flight: the "saved on shutdown"
+// guarantee was a race, and losing it silently costs up to one persist interval
+// of field values, which is what makes an asleep car's sensors read unknown after
+// a restart.
+//
+// Bounded, because a wedged goroutine must not be able to stop the process from
+// exiting — a container runtime would just SIGKILL it, which is strictly worse.
+func waitBackground(bg *sync.WaitGroup, log *slog.Logger) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		bg.Wait()
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		log.Warn("background tasks did not finish within 5s — state snapshot may be stale")
 	}
 }
 
