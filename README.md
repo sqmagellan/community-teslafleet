@@ -2,6 +2,26 @@
 
 **Bring your Tesla into Home Assistant — fully, for free, self-hosted.**
 
+**This is a fork of [LasseLegarth/community-teslafleet](https://github.com/LasseLegarth/community-teslafleet)**
+(MIT). The design and the overwhelming majority of the code are the original
+author's; upstream authorship and licence are preserved unchanged. If you are
+looking for the project itself, start upstream.
+
+The fork exists for two practical reasons: upstream's published container image is
+built only on `v*` tags, so `:latest` predates several important fixes (including
+the one where a dropped ZMQ peer wedges ingest permanently while MQTT keeps
+republishing stale values) — and we run this in production against two cars and
+would rather carry patches on branches than in a dirty working tree.
+
+Every change here is a single self-contained commit on its own `fix/…` branch cut
+from unmodified upstream, so each one can be sent upstream as a PR containing
+nothing else. **[FORK.md](FORK.md)** lists them all with the evidence and the
+reasoning behind each; highlights: real `/healthz` readiness, `car_type` derived
+from the VIN instead of a hardcoded `model3`, a stale `ChargePortLatch` no longer
+reporting a car as plugged in, credentials readable from files instead of
+environment variables, `/debug/state` off by default and token-gated, Home
+Assistant availability (LWT) plus retained state, and CI that actually blocks.
+
 A small self-hosted gateway that turns a free Tesla **Fleet Telemetry** stream into
 **Home Assistant MQTT auto-discovery**. Every signal your car emits shows up in HA as
 proper entities — sensors, binary sensors, **covers** (frunk/trunk/charge port/windows),
