@@ -3,6 +3,7 @@
 package vehicledata
 
 import (
+	"math"
 	"time"
 
 	"github.com/LasseLegarth/community-teslafleet/internal/config"
@@ -67,9 +68,35 @@ func Build(snap store.Snapshot, d store.Derived, veh config.Vehicle, tmpl *Templ
 	ds["power"] = drivePower(snap)
 
 	// ---- charge_state ----
-	if soc, ok := snap.Num(store.FieldSoc); ok {
-		cs["battery_level"] = int(soc)
-		cs["usable_battery_level"] = int(soc)
+	// battery_level and usable_battery_level are DIFFERENT numbers on a real car:
+	// the usable figure sits below the displayed one when the pack is cold, and
+	// TeslaMate uses the gap to show the blue snowflake (teslamate#321). Publishing
+	// one telemetry field as both made that gap structurally always zero.
+	//
+	// Which telemetry field is which, and the rounding, are both settled against
+	// real Fleet API documents fetched for two cars while they were awake:
+	//
+	//   telemetry Soc=59.221 BatteryLevel=59.553 -> API battery_level=60 usable=59
+	//   telemetry Soc=69.541 BatteryLevel=69.851 -> API battery_level=70 usable=70
+	//
+	// So BatteryLevel is the displayed SOC, Soc is the usable one, and the API
+	// ROUNDS rather than truncates. Truncating (the obvious int() conversion) makes
+	// battery_level read one percent low most of the time and hides the usable gap
+	// entirely -- in the first case above it would publish 59/59 where the car
+	// reports 60/59.
+	//
+	// min() is kept as a cheap invariant: usable must never exceed displayed, which
+	// is the one relation any consumer actually depends on.
+	soc, hasSoc := snap.Num(store.FieldSoc)
+	lvl, hasLvl := snap.Num(store.FieldBatteryLevel)
+	switch {
+	case hasSoc && hasLvl:
+		cs["battery_level"] = pct(lvl)
+		cs["usable_battery_level"] = pct(min(soc, lvl))
+	case hasLvl:
+		cs["battery_level"], cs["usable_battery_level"] = pct(lvl), pct(lvl)
+	case hasSoc:
+		cs["battery_level"], cs["usable_battery_level"] = pct(soc), pct(soc)
 	}
 	if r, ok := snap.Num(store.FieldRatedRange); ok {
 		mi := round1(RangeToMiles(r, units.RangeInput))
@@ -109,6 +136,15 @@ func Build(snap store.Snapshot, d store.Derived, veh config.Vehicle, tmpl *Templ
 	}
 	if t, ok := snap.Num(store.FieldOutsideTemp); ok {
 		cls["outside_temp"] = round1(t)
+	}
+	// is_climate_on was absent from the emulated document entirely, because the
+	// captured template ships an empty climate_state and nothing overlaid it — so
+	// every consumer read "no climate data" while HvacPower was streaming the whole
+	// time. Omitted rather than defaulted when the enum cannot be classified.
+	if v, ok := snap.Field(store.FieldIsClimateOn); ok {
+		if on, ok := store.HvacOn(v.Value); ok {
+			cls["is_climate_on"] = on
+		}
 	}
 
 	// ---- vehicle_state ----
@@ -185,6 +221,12 @@ func subObj(m map[string]any, key string) map[string]any {
 	sub := map[string]any{}
 	m[key] = sub
 	return sub
+}
+
+// pct rounds a percentage the way the Fleet API does. Verified against real
+// vehicle_data for two cars: 59.553 -> 60, 69.851 -> 70.
+func pct(v float64) int {
+	return int(math.Round(v))
 }
 
 func asStr(v any) string {
