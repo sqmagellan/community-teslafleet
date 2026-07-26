@@ -65,12 +65,19 @@ func NewPublisher(cfg *config.Config, st *store.Store, relay *commands.Relay, lo
 func (p *Publisher) Start() error {
 	opts := paho.NewClientOptions().
 		AddBroker(p.cfg.HA.Broker).
-		SetClientID(p.cfg.HA.ClientID + "-ha").
+		SetClientID(p.cfg.HA.ClientID+"-ha").
 		SetAutoReconnect(true).
 		SetCleanSession(true).
 		SetConnectRetry(true).
-		SetConnectRetryInterval(5 * time.Second).
+		SetConnectRetryInterval(5*time.Second).
+		// Last Will and Testament: the broker publishes this if we vanish without a
+		// clean disconnect (crash, OOM, container kill, network partition), which is
+		// exactly the case where HA would otherwise keep showing stale values.
+		SetWill(p.availabilityTopic(), payloadUnavailable, 1, true).
 		SetOnConnectHandler(func(c paho.Client) {
+			// Retained "online" first: publishing state before availability would
+			// briefly show live values under a stale "offline".
+			c.Publish(p.availabilityTopic(), 1, true, payloadAvailable)
 			// Re-announce on every (re)connect so retained discovery survives a broker
 			// restart. Clearing announced makes ensureAnnounced re-publish for all
 			// currently-known vehicles (configured + already auto-discovered).
@@ -104,6 +111,13 @@ func (p *Publisher) Start() error {
 
 func (p *Publisher) Stop() {
 	close(p.stop)
+	// A clean DISCONNECT tells the broker not to send the will, so a graceful stop
+	// has to publish the offline payload itself -- otherwise the tidy shutdown path
+	// is the one that leaves every HA entity looking available with values frozen at
+	// the moment we exited.
+	if tok := p.client.Publish(p.availabilityTopic(), 1, true, payloadUnavailable); !tok.WaitTimeout(2 * time.Second) {
+		p.log.Warn("publishing offline availability timed out")
+	}
 	p.client.Disconnect(250)
 }
 
@@ -191,6 +205,28 @@ func (p *Publisher) stateTopic(id string) string {
 	return fmt.Sprintf("%s/%s/state", p.cfg.HA.StateTopicBase, id)
 }
 
+// availabilityTopic is the gateway-wide LWT topic. It is retained, so a Home
+// Assistant that starts while the gateway is down learns that immediately instead
+// of showing the last retained state values as though they were current.
+func (p *Publisher) availabilityTopic() string {
+	return p.cfg.HA.StateTopicBase + "/availability"
+}
+
+const (
+	payloadAvailable   = "online"
+	payloadUnavailable = "offline"
+)
+
+// setAvailability points one entity at the gateway's LWT topic. Every discovery
+// config gets it, including the auto-generated ones: an entity with no
+// availability_topic can only ever show its last value, and a frozen value is
+// indistinguishable from a current one -- which is the whole failure this fixes.
+func (p *Publisher) setAvailability(c map[string]any) {
+	c["availability_topic"] = p.availabilityTopic()
+	c["payload_available"] = payloadAvailable
+	c["payload_not_available"] = payloadUnavailable
+}
+
 func (p *Publisher) trackerTopic(id, name string) string {
 	return fmt.Sprintf("%s/%s/%s", p.cfg.HA.StateTopicBase, id, name)
 }
@@ -269,8 +305,13 @@ func (p *Publisher) publishState() {
 			p.log.Error("marshal state failed", "vin", v.VIN, "err", err)
 			continue
 		}
-		// QoS0 fire-and-forget; state is republished every interval.
-		p.client.Publish(p.stateTopic(p.pubID(v)), 0, false, payload)
+		// Retained QoS0. Without retain, an HA or broker restart leaves every entity
+		// blank until the next tick; with it, HA has values the moment it subscribes.
+		// Retain is only safe BECAUSE of the availability topic above -- a retained
+		// value from a dead gateway would otherwise look current forever. The broker
+		// rewrites one retained message per vehicle per interval, which mosquitto
+		// flushes on its own autosave schedule rather than per publish.
+		p.client.Publish(p.stateTopic(p.pubID(v)), 0, true, payload)
 		// Dedicated retained GPS topics for the device_trackers.
 		p.publishTrackers(p.pubID(v), st)
 	}
@@ -329,6 +370,7 @@ func (p *Publisher) genericDiscoveryConfig(v config.Vehicle, field string, val a
 		"entity_category": "diagnostic",
 		"qos":             1,
 	}
+	p.setAvailability(c)
 	if _, ok := val.(bool); ok {
 		c["payload_on"] = "true"
 		c["payload_off"] = "false"
@@ -425,6 +467,7 @@ func (p *Publisher) commandDiscoveryConfig(v config.Vehicle, ce commands.Entity,
 		"origin":        origin,
 		"qos":           1,
 	}
+	p.setAvailability(c)
 	state := p.stateTopic(id)
 	switch ce.Component {
 	case "button":
@@ -516,6 +559,7 @@ func (p *Publisher) discoveryConfig(v config.Vehicle, e entity, dev, origin map[
 		"origin":      origin,
 		"qos":         1,
 	}
+	p.setAvailability(c)
 	if e.DeviceClass != "" {
 		c["device_class"] = e.DeviceClass
 	}
@@ -572,7 +616,20 @@ func (p *Publisher) valueTemplate(e entity) string {
 	if e.ValueTmpl != "" {
 		return e.ValueTmpl
 	}
-	// Render nothing (entity unavailable) when the key is absent, so HA shows
-	// "unknown" instead of a stale value.
+	// An absent key must render as something HA accepts for this entity type.
+	//
+	// For device_class "enum", the empty string is NOT a member of the declared
+	// options list, so HA rejects it and logs
+	//   Ignoring invalid option ... got ''
+	// on EVERY message. With two parked cars that was ~86k warning lines/day.
+	// Rendering the Jinja literal none yields state "unknown", which HA accepts
+	// for any entity regardless of options.
+	//
+	// For every other device_class the empty string is the correct "no value"
+	// rendering, so keep it: switching those to none would change published
+	// payloads for entities that are working today.
+	if e.DeviceClass == "enum" {
+		return fmt.Sprintf("{{ value_json.%s | default(none) }}", e.Key)
+	}
 	return fmt.Sprintf("{{ value_json.%s | default('') }}", e.Key)
 }
