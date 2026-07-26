@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -212,12 +214,55 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	json.NewEncoder(w).Encode(map[string]any{"response": nil, "error": msg, "error_description": ""})
 }
 
+// sensitiveQueryParams are redacted before a request line is logged.
+//
+// This is not hypothetical: TeslaMate's legacy streaming client passes its
+// access token as a query parameter, and Tesla's OAuth flow puts an
+// authorization code in one. At debug level the raw query string therefore puts
+// a live credential into a log file that outlives it and gets copied into bug
+// reports. Redacting at the logging site — rather than telling operators not to
+// enable debug — is what makes debug logging safe to ask for.
+var sensitiveQueryParams = map[string]bool{
+	"token":         true,
+	"access_token":  true,
+	"refresh_token": true,
+	"id_token":      true,
+	"code":          true,
+	"client_secret": true,
+	"password":      true,
+	"secret":        true,
+}
+
+// redactQuery preserves the shape of a query string — which parameters were sent
+// is the useful part when debugging — while replacing credential values.
+//
+// A query that will not parse is dropped entirely rather than logged raw: if it
+// cannot be parsed it cannot be redacted, and the failure mode has to be losing
+// debug detail, not leaking a token.
+func redactQuery(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	vals, err := url.ParseQuery(raw)
+	if err != nil {
+		return "<unparseable, redacted>"
+	}
+	for k, vs := range vals {
+		if sensitiveQueryParams[strings.ToLower(k)] {
+			for i := range vs {
+				vs[i] = "<redacted>"
+			}
+		}
+	}
+	return vals.Encode()
+}
+
 func logRequests(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			next.ServeHTTP(w, r)
-			log.Debug("fleetapi", "method", r.Method, "path", r.URL.Path, "query", r.URL.RawQuery, "dur_ms", time.Since(start).Milliseconds())
+			log.Debug("fleetapi", "method", r.Method, "path", r.URL.Path, "query", redactQuery(r.URL.RawQuery), "dur_ms", time.Since(start).Milliseconds())
 		})
 	}
 }
