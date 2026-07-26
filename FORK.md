@@ -51,6 +51,8 @@ Current `fix/` branches, in the order they should go upstream:
 | `fix/debug-gate` | `/debug/state` off by default, token-gated when on |
 | `fix/vehicle-data-gaps` | publish `is_climate_on`; stop reporting one SOC as two |
 | `feat/ha-availability` | retained state + an availability (LWT) topic |
+| `fix/shutdown-ordering` | wait for the shutdown flush instead of racing exit |
+| `feat/vehicle-data-seed` | gated fetch of the real `vehicle_data` (needs `fix/debug-gate`) |
 | `fix/dep-bump` | close three reachable advisories |
 | `fix/ci` | CI on push/PR + blocking linter (depends on `fix/error-handling`) |
 
@@ -273,6 +275,47 @@ of the availability topic, since a retained value from a dead gateway would
 otherwise look current indefinitely. The retained availability payload matters in
 the reverse order too: an HA that starts while the gateway is down learns that
 immediately rather than trusting retained state.
+
+### `fix/shutdown-ordering` — wait for the shutdown flush
+
+`store.Persist` already saves a snapshot when its context is cancelled, but it was
+started with a bare `go` and never waited on, so `main` returned and the process
+exited while that save was still in flight. The "saved on shutdown" guarantee was
+a coin flip, and losing it costs up to one persist interval (30s) of field values —
+which is precisely what makes an asleep car's sensors read `unknown` after a
+restart, the thing the snapshot exists to prevent.
+
+Goroutines that flush on the way out now register with a `WaitGroup` waited on
+last, after the deferred `Stop()`/`Close()` calls. Bounded at 5s: a wedged
+goroutine must not stop the process from exiting, because the runtime answers that
+with `SIGKILL`, which is strictly worse. Verified on the deployed build — the
+snapshot's mtime matches the stop instant on a container that had been up nine
+seconds, far short of the 30s tick.
+
+### `feat/vehicle-data-seed` — a gated fetch of the real `vehicle_data`
+
+**Depends on `fix/debug-gate`** (reuses `debugAllowed` and its token).
+
+Telemetry is delta-only: a field the car has not changed since enrollment is never
+sent at all, so slow-moving values — `charge_limit_soc` and `sentry_mode` before
+their first change, `trim_badging`, a parked `odometer` — are *missing* from the
+emulated document rather than merely stale. `Relay.VehicleData` fetches one real
+Fleet API document, which seeds them; the stream keeps them current afterwards.
+
+Deliberate limits, all of them load-bearing:
+
+- **It does not wake the car.** Tesla answers 408 for a sleeping vehicle and that
+  surfaces as an error. Waking a car spends range on something a seed can wait for.
+- **Nothing calls it on a timer.** Each call costs ~$0.002, so it is a manual
+  `GET /debug/upstream/{vin}` behind the `/debug/state` gate, logged at warn level.
+- **The VIN must already be known** to the gateway. Accepting an arbitrary VIN
+  would turn a debug endpoint into a way to spend money against someone else's car.
+- **`location_data` is not requested.** GPS arrives on the stream for free, and
+  asking would tie the call to a scope it does not need.
+
+The handler writes its response directly rather than through the shared response
+helpers, which are a `Server` method on one branch and a package function on
+another; it should not care which lands upstream first.
 
 ### `fix/dep-bump` — close three reachable advisories
 
