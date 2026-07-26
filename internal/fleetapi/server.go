@@ -69,6 +69,7 @@ func (s *Server) Routes() chi.Router {
 	r.Post("/api/1/vehicles/{id}/wake_up", s.handleWake)
 	r.Post("/admin/enroll", s.handleEnroll)
 	r.Get("/debug/state", s.handleDebug)
+	r.Get("/debug/upstream/{vin}", s.handleUpstreamVehicleData)
 	r.Get("/healthz", s.handleHealthz)
 	return r
 }
@@ -244,6 +245,53 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(code)
 	if err := json.NewEncoder(w).Encode(h); err != nil {
 		s.log.Warn("healthz encode failed", "err", err)
+	}
+}
+
+// handleUpstreamVehicleData returns the REAL Fleet API vehicle_data document for
+// one configured VIN, behind the same gate and the same token as /debug/state.
+//
+// Manual on purpose: every call costs about $0.002, so nothing in the gateway
+// triggers it on a timer. It is here to seed the slow-moving values telemetry
+// never resends, and to check the emulated document against ground truth -- the
+// only way to confirm a mapping that was inferred from telemetry alone.
+//
+// The VIN must be one the gateway already knows: accepting an arbitrary VIN would
+// turn a debug endpoint into a way to spend money against someone else's car.
+func (s *Server) handleUpstreamVehicleData(w http.ResponseWriter, r *http.Request) {
+	if !s.debugAllowed(w, r) {
+		return
+	}
+	if s.relay == nil {
+		http.Error(w, "command relay is disabled", http.StatusServiceUnavailable)
+		return
+	}
+	vin := chi.URLParam(r, "vin")
+	known := false
+	for _, v := range s.effectiveVehicles() {
+		if v.VIN == vin {
+			known = true
+			break
+		}
+	}
+	if !known {
+		http.Error(w, "unknown vehicle", http.StatusNotFound)
+		return
+	}
+	// Warn level: a paid call deserves a log line that says so.
+	s.log.Warn("making a PAID upstream vehicle_data call", "vin", vin, "remote_addr", r.RemoteAddr)
+	doc, err := s.relay.VehicleData(vin)
+	if err != nil {
+		s.log.Warn("upstream vehicle_data failed", "vin", vin, "err", err)
+		http.Error(w, "upstream vehicle_data failed", http.StatusBadGateway)
+		return
+	}
+	// Written directly rather than through the shared response helpers: those are a
+	// method on Server on one branch and a package function on another, and this
+	// handler should not depend on which of them lands upstream first.
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]any{"response": doc}); err != nil {
+		s.log.Warn("upstream vehicle_data encode failed", "vin", vin, "err", err)
 	}
 }
 

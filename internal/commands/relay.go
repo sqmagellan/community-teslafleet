@@ -376,6 +376,70 @@ type vehicleSummary struct {
 
 // getVehicle fetches the vehicle summary from the Fleet API. Does not wake the
 // car. Requires commands.fleet_api_url.
+// vehicleDataEndpoints is the endpoint set requested from the real Fleet API.
+// location_data is deliberately NOT requested: GPS comes from telemetry for free,
+// and asking for it would make the call depend on a scope this seed does not need.
+const vehicleDataEndpoints = "charge_state;climate_state;vehicle_config;vehicle_state;gui_settings;drive_state"
+
+// VehicleData fetches the REAL Fleet API vehicle_data document for one VIN.
+//
+// This is the only paid Fleet API call in the gateway (about $0.002 a call). It
+// exists because telemetry is delta-only: a field the car has not changed since
+// enrollment is never sent at all, so slow-moving values (charge_limit_soc and
+// sentry_mode before their first change, trim_badging, a parked odometer) are
+// missing from the emulated document rather than merely stale. One real document
+// seeds them, after which the stream keeps them current for free.
+//
+// It deliberately does NOT wake the car. Tesla answers 408 for a sleeping vehicle
+// and that is returned as an error here, because waking a car to read it spends
+// range on something a seed can simply wait for -- callers fetch opportunistically
+// while the car is already online.
+func (r *Relay) VehicleData(vin string) (map[string]any, error) {
+	if r.fleetAPI == "" {
+		return nil, fmt.Errorf("fleet_api_url not set")
+	}
+	tok, err := r.tm.token()
+	if err != nil {
+		return nil, fmt.Errorf("token: %w", err)
+	}
+	// The endpoint list MUST be percent-encoded. Sent with literal semicolons,
+	// Tesla reads only the first entry and silently returns a document containing
+	// charge_state alone -- measured: every other section came back absent, which
+	// looks exactly like a car that reports nothing rather than a malformed request.
+	reqURL := fmt.Sprintf("%s/api/1/vehicles/%s/vehicle_data?endpoints=%s",
+		r.fleetAPI, vin, url.QueryEscape(vehicleDataEndpoints))
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := r.apiClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	// A full vehicle_data document is far larger than the command responses this
+	// client otherwise reads, so the cap is raised rather than reused -- truncating
+	// it would produce a decode error that looks like an API fault.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var out struct {
+		Response map[string]any `json:"response"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	if out.Response == nil {
+		return nil, fmt.Errorf("vehicle_data had no response object")
+	}
+	return out.Response, nil
+}
+
 func (r *Relay) getVehicle(vin string) (vehicleSummary, error) {
 	var vs vehicleSummary
 	if r.fleetAPI == "" {
