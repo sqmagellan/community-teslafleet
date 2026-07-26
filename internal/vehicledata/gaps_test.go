@@ -39,10 +39,19 @@ func TestBatteryLevelsUseBothSocFields(t *testing.T) {
 		wantUsable any
 	}{
 		{
-			name:       "both present, usable below displayed",
-			fields:     map[string]any{store.FieldSoc: 58.4, store.FieldBatteryLevel: 59.9},
-			wantLevel:  59,
-			wantUsable: 58,
+			// The real values measured against a live car's Fleet API response: the API answered 60/59, so
+			// rounding (not truncation) is what reproduces ground truth.
+			name:       "measured against the real API: 59.221/59.553 -> 59/60",
+			fields:     map[string]any{store.FieldSoc: 59.221, store.FieldBatteryLevel: 59.553},
+			wantLevel:  60,
+			wantUsable: 59,
+		},
+		{
+			// A second live car, the same day: the API answered 70/70.
+			name:       "measured against the real API: 69.541/69.851 -> 70/70",
+			fields:     map[string]any{store.FieldSoc: 69.541, store.FieldBatteryLevel: 69.851},
+			wantLevel:  70,
+			wantUsable: 70,
 		},
 		{
 			name:       "reversed ordering still cannot exceed displayed",
@@ -57,10 +66,10 @@ func TestBatteryLevelsUseBothSocFields(t *testing.T) {
 			wantUsable: 72,
 		},
 		{
-			name:       "only BatteryLevel: used for both",
+			name:       "only BatteryLevel: used for both, rounded",
 			fields:     map[string]any{store.FieldBatteryLevel: 40.7},
-			wantLevel:  40,
-			wantUsable: 40,
+			wantLevel:  41,
+			wantUsable: 41,
 		},
 		{
 			name:       "neither: keys left absent, not zeroed",
