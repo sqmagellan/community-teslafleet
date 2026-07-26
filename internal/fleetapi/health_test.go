@@ -30,7 +30,9 @@ func healthFixture(t *testing.T, staleAfter int) (*Server, *store.Store, func(ti
 	clock := now
 	st.SetClock(func() time.Time { return clock })
 	cfg := &config.Config{
-		State:    config.State{StaleAfterSeconds: staleAfter},
+		State: config.State{StaleAfterSeconds: staleAfter},
+		// /debug/state is opt-in; these tests assert on what it exposes.
+		Debug:    config.Debug{StateEnabled: true},
 		Vehicles: []config.Vehicle{{VIN: testVIN, ID: 1, VehicleID: 2}},
 	}
 	srv := NewServer(st, cfg, nil, nil, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
