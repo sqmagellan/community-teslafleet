@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-zeromq/zmq4"
@@ -31,7 +32,21 @@ type Consumer struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	seenVINs map[string]bool // first-record breadcrumb (loop goroutine only)
+
+	// connected tracks whether the SUB socket is currently dialled, so a health
+	// check can see a dead link. Atomic: written by the ingest goroutine, read
+	// by HTTP handlers.
+	connected atomic.Bool
 }
+
+// Connected reports whether the SUB socket is currently dialled. It is false
+// before the first successful dial, and from the moment a recv error is seen
+// until reconnect() succeeds.
+//
+// Expose this, because a faulted ingest link is otherwise undetectable from
+// outside: the publisher keeps republishing the last-known store at full rate,
+// so a wedged socket looks exactly like a parked fleet.
+func (c *Consumer) Connected() bool { return c.connected.Load() }
 
 type vPayload struct {
 	Vin  string `json:"vin"`
@@ -95,6 +110,7 @@ func (c *Consumer) dial() error {
 		return err
 	}
 	c.sub = sub
+	c.connected.Store(true)
 	c.log.Info("zmq ingest connected", "addr", c.addr)
 	return nil
 }
@@ -102,6 +118,7 @@ func (c *Consumer) dial() error {
 // reconnect tears down the faulted socket and re-dials with backoff. Returns
 // false if the context was cancelled while reconnecting.
 func (c *Consumer) reconnect() bool {
+	c.connected.Store(false)
 	if c.sub != nil {
 		_ = c.sub.Close()
 		c.sub = nil
@@ -130,6 +147,7 @@ func (c *Consumer) reconnect() bool {
 
 func (c *Consumer) Stop() {
 	c.cancel()
+	c.connected.Store(false)
 	if c.sub != nil {
 		_ = c.sub.Close()
 	}

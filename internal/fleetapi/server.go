@@ -5,6 +5,7 @@ package fleetapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -26,8 +27,22 @@ type Server struct {
 	byKey      map[string]config.Vehicle        // id-string and VIN -> vehicle
 	relay      *commands.Relay                  // optional: for self-enroll (may be nil)
 	enrollFile string                           // path to fleet_telemetry_config JSON
+	ingest     IngestHealth                     // optional: telemetry link state (may be nil)
 	log        *slog.Logger
 }
+
+// IngestHealth is the slice of the telemetry consumer that readiness needs.
+// An interface rather than a concrete type so fleetapi does not import ingest
+// (and so tests can fake a dead link).
+type IngestHealth interface {
+	Connected() bool
+}
+
+// SetIngestHealth attaches the telemetry consumer so /healthz can report the
+// ingest link. Optional: with no source attached, /healthz still reports store
+// freshness but cannot distinguish "link down" from "fleet asleep", so it does
+// not claim to.
+func (s *Server) SetIngestHealth(h IngestHealth) { s.ingest = h }
 
 func NewServer(st *store.Store, cfg *config.Config, tmpls map[string]*vehicledata.Template, relay *commands.Relay, enrollFile string, log *slog.Logger) *Server {
 	return &Server{
@@ -51,7 +66,7 @@ func (s *Server) Routes() chi.Router {
 	r.Post("/api/1/vehicles/{id}/wake_up", s.handleWake)
 	r.Post("/admin/enroll", s.handleEnroll)
 	r.Get("/debug/state", s.handleDebug)
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
+	r.Get("/healthz", s.handleHealthz)
 	return r
 }
 
@@ -139,6 +154,96 @@ func (s *Server) handleEnroll(w http.ResponseWriter, _ *http.Request) {
 	writeResponse(w, map[string]any{"enrolled": true})
 }
 
+// Health is the readiness verdict served by /healthz.
+type Health struct {
+	Status string `json:"status"` // ok | degraded
+	// IngestConnected is nil when no ingest source is attached: unknown is a
+	// distinct answer from "down" and must not be reported as either.
+	IngestConnected *bool `json:"ingest_connected"`
+	// LastIngestUnix is 0 and LastIngestAgeS is -1 when nothing has ever been
+	// ingested, so a caller can tell "never" from "just now".
+	LastIngestUnix int64  `json:"last_ingest_unix"`
+	LastIngestAgeS int64  `json:"last_ingest_age_s"`
+	VehiclesOnline int    `json:"vehicles_online"`
+	VehiclesKnown  int    `json:"vehicles_known"`
+	StaleAfterS    int    `json:"stale_after_s"`
+	Reason         string `json:"reason,omitempty"`
+}
+
+// health computes readiness.
+//
+// The rule is: the ingest link must be up, AND if any vehicle is online it must
+// have streamed something within stale_after_seconds. The second half has to be
+// conditional, because a sleeping fleet streams nothing for hours and that is
+// correct behaviour, not a fault — an unconditional freshness check would fail
+// every night, and a check that ignores freshness misses the failure that
+// actually happens (a faulted socket while the publisher keeps republishing
+// stale values).
+//
+// A fleet with nothing online is therefore READY: there is no evidence of a
+// problem, and the alternative -- staying unready until the first message --
+// would leave the gateway permanently unready whenever it restarts while every
+// car is asleep.
+func (s *Server) health() Health {
+	now := s.store.Now()
+	h := Health{
+		Status:         "ok",
+		LastIngestAgeS: -1,
+		StaleAfterS:    s.cfg.State.StaleAfterSeconds,
+	}
+	if s.ingest != nil {
+		connected := s.ingest.Connected()
+		h.IngestConnected = &connected
+	}
+	if last := s.store.LastIngest(); !last.IsZero() {
+		h.LastIngestUnix = last.Unix()
+		h.LastIngestAgeS = int64(now.Sub(last).Seconds())
+	}
+	for _, v := range s.effectiveVehicles() {
+		h.VehiclesKnown++
+		if snap, _ := s.store.Snapshot(v.VIN); snap.Connectivity == "online" {
+			h.VehiclesOnline++
+		}
+	}
+
+	stale := int64(s.cfg.State.StaleAfterSeconds)
+	switch {
+	case h.IngestConnected != nil && !*h.IngestConnected:
+		h.Status = "degraded"
+		h.Reason = "telemetry ingest link is not connected"
+	case h.VehiclesOnline == 0:
+		// Nothing is expected to be streaming.
+	case stale <= 0:
+		// Freshness threshold disabled by config; the link check is all we have.
+	case h.LastIngestAgeS < 0:
+		h.Status = "degraded"
+		h.Reason = fmt.Sprintf("%d vehicle(s) online but no telemetry has ever been received", h.VehiclesOnline)
+	case h.LastIngestAgeS > stale:
+		h.Status = "degraded"
+		h.Reason = fmt.Sprintf("%d vehicle(s) online but no telemetry for %ds (stale after %ds)",
+			h.VehiclesOnline, h.LastIngestAgeS, stale)
+	}
+	return h
+}
+
+// handleHealthz serves real readiness: 200 when ingest is demonstrably working
+// (or legitimately quiet), 503 with a reason when it is not. It used to return a
+// hard-coded "ok", which stayed green through a wedged ingest socket and so was
+// worse than no probe at all -- anything built on it, including a container
+// healthcheck, was guaranteed to miss the one failure that happens.
+func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	h := s.health()
+	code := http.StatusOK
+	if h.Status != "ok" {
+		code = http.StatusServiceUnavailable
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	if err := json.NewEncoder(w).Encode(h); err != nil {
+		s.log.Warn("healthz encode failed", "err", err)
+	}
+}
+
 func (s *Server) handleDebug(w http.ResponseWriter, _ *http.Request) {
 	now := s.store.Now()
 	out := map[string]any{}
@@ -149,13 +254,27 @@ func (s *Server) handleDebug(w http.ResponseWriter, _ *http.Request) {
 		for name, fv := range snap.Fields {
 			fields[name] = map[string]any{"value": fv.Value, "age_s": int(now.Sub(fv.UpdatedAt).Seconds()), "count": fv.Count}
 		}
+		// Explicit last-ingest timestamp per vehicle. Without it, the only way to
+		// tell whether this vehicle's state is still moving is to diff successive
+		// /debug/state responses -- and that does not work, because every field
+		// carries an age_s that ticks on its own, so a naive whole-object
+		// comparison always reports a change even for a car that has been silent
+		// for hours.
+		var lastUnix, lastAge int64 = 0, -1
+		if !snap.LastV.IsZero() {
+			lastUnix = snap.LastV.Unix()
+			lastAge = int64(now.Sub(snap.LastV).Seconds())
+		}
 		out[v.VIN] = map[string]any{
-			"seen":         seen,
-			"state":        d.State,
-			"driving":      d.Driving,
-			"charging":     d.Charging,
-			"connectivity": snap.Connectivity,
-			"fields":       fields,
+			"seen":              seen,
+			"state":             d.State,
+			"driving":           d.Driving,
+			"charging":          d.Charging,
+			"connectivity":      snap.Connectivity,
+			"last_ingest_unix":  lastUnix,
+			"last_ingest_age_s": lastAge,
+			"field_count":       len(snap.Fields),
+			"fields":            fields,
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
