@@ -242,14 +242,22 @@ does not know either, and a confident `false` is worse than a missing key.
 `battery_level` and `usable_battery_level` were both `Soc`. On a real car the
 usable figure sits below the displayed one when the pack is cold, and TeslaMate
 uses that gap to show the blue snowflake (teslamate#321) — publishing one value as
-both made the gap structurally always zero. Telemetry carries two SOC fields:
-measured on two cars, `Soc` sits consistently just below `BatteryLevel`, which is
-the ordering the Fleet API requires of usable vs displayed, so `Soc` maps to
-`usable_battery_level` and `BatteryLevel` to `battery_level`. That mapping is an
-**inference from ordering**, not from Tesla's field docs, which do not distinguish
-the two; the pair is emitted through `min()` so even a reversed reading cannot
-produce `usable > displayed`, which is the only relation a consumer depends on.
-Either field alone is still used for both.
+both made the gap structurally always zero.
+
+Settled against real Fleet API documents fetched for two cars while they were
+awake (see `feat/vehicle-data-seed`):
+
+| telemetry `Soc` | telemetry `BatteryLevel` | API `battery_level` | API `usable_battery_level` |
+|---|---|---|---|
+| 59.221 | 59.553 | 60 | 59 |
+| 69.541 | 69.851 | 70 | 70 |
+
+So `BatteryLevel` is the displayed SOC, `Soc` is the usable one, and **the API
+rounds where the obvious `int()` conversion truncates**. Truncating published 59/59
+where the car itself reports 60/59: `battery_level` read one percent low most of
+the time *and* the usable gap vanished. Rounding reproduces all four measured
+values exactly. `min()` stays as the invariant that usable can never exceed
+displayed.
 
 `store.HvacOn` becomes the single place that decides what an `HvacPower` value
 means, and `hadiscovery.hvacOn` delegates to it, so the HA binary_sensor and the
@@ -310,6 +318,11 @@ Deliberate limits, all of them load-bearing:
   `GET /debug/upstream/{vin}` behind the `/debug/state` gate, logged at warn level.
 - **The VIN must already be known** to the gateway. Accepting an arbitrary VIN
   would turn a debug endpoint into a way to spend money against someone else's car.
+- **The endpoint list must be percent-encoded.** Sent with literal semicolons,
+  Tesla reads only the first entry and returns a document containing `charge_state`
+  alone. Every other section comes back *absent*, which is indistinguishable from a
+  car reporting nothing — a silent failure that produces a seed missing exactly the
+  values the seed exists for. Measured, then fixed and tested.
 - **`location_data` is not requested.** GPS arrives on the stream for free, and
   asking would tie the call to a scope it does not need.
 
