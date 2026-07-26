@@ -35,7 +35,7 @@ FLEETAPI="${GATE_FLEETAPI_URL:-http://127.0.0.1:4460}"
 HEALTH_DIR="${GATE_HEALTH_DIR:-/home/ames/home-assistant/config/ames-health}"
 # /debug/state is gated (default off upstream, token-protected here), so the live
 # checks have to authenticate. Same file the container mounts read-only.
-DEBUG_TOKEN_FILE="${GATE_DEBUG_TOKEN_FILE:-/home/ames/.teslafleet-debug-token}"
+DEBUG_TOKEN_FILE="${GATE_DEBUG_TOKEN_FILE:-/home/ames/.tesla-fleet-api/debug_token}"
 DEBUG_TOKEN="$(cat "$DEBUG_TOKEN_FILE" 2>/dev/null || true)"
 
 DO_STATIC=1

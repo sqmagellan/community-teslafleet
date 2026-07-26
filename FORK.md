@@ -45,6 +45,10 @@ Current `fix/` branches, in the order they should go upstream:
 | `fix/plugged-in` | corroborate a stale `ChargePortLatch` |
 | `fix/readiness` | real `/healthz` + last-ingest timestamps |
 | `fix/error-handling` | stop discarding errors that hide real failures |
+| `fix/secret-files` | read any string setting from `<VAR>_FILE` |
+| `fix/token-cache-validation` | a cached refresh token satisfies validation |
+| `fix/log-redaction` | keep credentials out of the request log |
+| `fix/debug-gate` | `/debug/state` off by default, token-gated when on |
 | `fix/dep-bump` | close three reachable advisories |
 | `fix/ci` | CI on push/PR + blocking linter (depends on `fix/error-handling`) |
 
@@ -164,6 +168,61 @@ recovers. `internal/recorder` had no tests before this either.
 
 `defer resp.Body.Close()` and friends are deliberately left alone.
 
+### `fix/secret-files` — read any string setting from `<VAR>_FILE`
+
+Secrets could only be environment variables, which means they live in the compose
+file, in `docker inspect` output, in the environment of every child process, and
+in any crash dump that captures the environment. Tesla's own vehicle-command proxy
+already takes its client id and secret as *files*, so a deployment ends up with two
+conventions for the same credential.
+
+`setStr` is the single choke point for every string setting, so the support goes
+there and covers `TGW_TESLA_CLIENT_SECRET`, `TGW_TESLA_REFRESH_TOKEN`,
+`TGW_HA_PASSWORD` and `TGW_ONBOARD_PASSWORD` without enumerating them.
+
+`_FILE` wins when both are set — migrating a secret out of an env var must not
+silently keep reading the stale inline copy you are deleting. An unreadable path
+logs an error and falls back rather than leaving the value empty, because a typo'd
+path that reads as "never configured" surfaces as a confusing auth failure
+somewhere unrelated.
+
+### `fix/token-cache-validation` — a cached refresh token is a valid credential
+
+`commands.enabled` required `commands.refresh_token` to be non-empty. But that
+value is only ever a **seed**: Tesla rotates the token on every refresh, so within
+seconds of first start the config copy is stale and `token_cache` holds the live
+one — the relay logs `loaded refresh token from cache` and never reads the config
+value again.
+
+Requiring it anyway forces a stale credential to be kept forever in whatever holds
+the config, where it is the copy that leaks and — because deleting it crash-loops
+the gateway on a validation error — the copy nobody dares delete. Validation now
+accepts either the seed or a non-empty cache file.
+
+### `fix/log-redaction` — keep credentials out of the request log
+
+The request logger formatted `r.URL.RawQuery` straight into a debug line.
+TeslaMate's legacy streaming client passes its access token as a query parameter
+and Tesla's OAuth flow puts an authorization code in one, so enabling debug
+logging wrote live credentials into a log that outlives them and gets pasted into
+bug reports. `redactQuery` keeps which parameters were sent — the useful part —
+and replaces the values. A query that will not parse is dropped rather than logged
+raw: if it cannot be parsed it cannot be redacted.
+
+### `fix/debug-gate` — `/debug/state` off by default, token-gated when on
+
+`/debug/state` is the most sensitive thing this process serves: every stored
+telemetry field for every vehicle, which includes precise GPS, the active route's
+destination and the odometer — a live location feed for a named car, previously
+unauthenticated with nothing in front of it but whatever address the operator
+bound to.
+
+Now opt-in (`debug.state_enabled`, default false) with an optional shared secret
+(`debug.token`). Disabled answers 404 rather than 403, because a 403 confirms the
+endpoint exists. The token comes from `X-Debug-Token` or `Authorization: Bearer`
+and deliberately **not** from a query parameter, which would be written into this
+server's own request log. The comparison is constant time.
+
 ### `fix/dep-bump` — close three reachable advisories
 
 `govulncheck` reported three vulnerabilities in code paths this project actually
@@ -215,6 +274,15 @@ MIT, unchanged, upstream `LICENSE` retained. Upstream commits keep their origina
 authorship; everything added here is a separate commit. If upstream picks these
 changes up, the corresponding `fix/` branch disappears from this list on the next
 merge — which is the goal.
+
+## Deployment notes that are not upstream's problem
+
+The container runs as uid 65532 (distroless nonroot). A credential file owned by
+another uid with mode 0600 is therefore unreadable to it, and because config load
+aborts when a `*_FILE` path cannot be read, the result is a restart loop. Either
+grant the container's gid read access (`chgrp 65532` + `chmod 640`) or leave the
+value inline — do not "fix" it by making the file world-readable without deciding
+that deliberately.
 
 ## Publishing
 
