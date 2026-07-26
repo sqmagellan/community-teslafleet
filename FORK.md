@@ -53,6 +53,7 @@ Current `fix/` branches, in the order they should go upstream:
 | `feat/ha-availability` | retained state + an availability (LWT) topic |
 | `fix/shutdown-ordering` | wait for the shutdown flush instead of racing exit |
 | `feat/vehicle-data-seed` | gated fetch of the real `vehicle_data` (needs `fix/debug-gate`) |
+| `fix/rediscover-on-reconnect` | generic discovery comes back with the curated kind |
 | `fix/dep-bump` | close three reachable advisories |
 | `fix/ci` | CI on push/PR + blocking linter (depends on `fix/error-handling`) |
 
@@ -329,6 +330,25 @@ Deliberate limits, all of them load-bearing:
 The handler writes its response directly rather than through the shared response
 helpers, which are a `Server` method on one branch and a package function on
 another; it should not care which lands upstream first.
+
+### `fix/rediscover-on-reconnect` — generic discovery must come back too
+
+Discovery configs live on the broker as retained messages. When the broker loses
+them — a fresh persistence database, a replaced container, retained messages
+cleared by hand — the curated entities returned on the next reconnect, because the
+connect handler clears `announced`. The generic per-field entities did not:
+`discovered` was never cleared, so they were published exactly once per process and
+a diagnostic entity could stay missing from Home Assistant until someone happened
+to restart the gateway. One failure, two very different recovery times, for no
+reason a user could see.
+
+`resetAnnounced` now clears both maps. That puts a write on the MQTT connect
+callback and reads on the publish ticker, so both go through the mutex that already
+protected `announced` — `discovered` had been single-goroutine by accident, and
+clearing it on reconnect without the lock would have introduced a race.
+
+Verified live by restarting the broker: all 196 retained configs came back, every
+one carrying `availability_topic`, with the availability topic back to `online`.
 
 ### `fix/dep-bump` — close three reachable advisories
 
