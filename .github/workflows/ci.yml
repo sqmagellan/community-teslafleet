@@ -59,9 +59,13 @@ jobs:
         with:
           go-version-file: go.mod
       - name: govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+        # `go run` rather than `go install` + a bare binary name: the latter
+        # depends on GOPATH/bin being on PATH. GOTOOLCHAIN=auto because setup-go
+        # pins the toolchain to the one in go.mod, and x/vuln's own go directive
+        # moves ahead of it — without this the tool cannot even be built.
+        env:
+          GOTOOLCHAIN: auto
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   lint:
     runs-on: ubuntu-latest
@@ -76,7 +80,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v6
+      # v9+ is required: .golangci.yml uses the v2 config schema, and action v6
+      # installs golangci-lint v1, which rejects it outright.
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
 
