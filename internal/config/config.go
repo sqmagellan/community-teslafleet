@@ -599,7 +599,35 @@ func deriveID(vin string) int64 {
 	return int64(h%1_000_000_000_000) + 1
 }
 
+// setStr reads a setting from env, or from the file named by env+"_FILE".
+//
+// The _FILE form exists so a credential never has to appear in a compose file,
+// an image layer, or `docker inspect` output — the same convention Tesla's own
+// vehicle-command proxy and most infrastructure images already use. It applies
+// to every string setting rather than a curated list of secrets: there is no
+// cost to that, and a list is one more thing to forget to update.
+//
+// _FILE wins when both are set. That direction matters: migrating a secret out
+// of an environment variable must not silently keep reading the stale inline
+// copy you are trying to delete.
 func setStr(dst *string, env string) {
+	if path, ok := os.LookupEnv(env + "_FILE"); ok && path != "" {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			// Deliberately fall through to the plain variable instead of leaving
+			// the value empty: a typo'd path must not silently look like "this
+			// setting was never configured", which for a credential surfaces as
+			// a confusing auth failure somewhere far away.
+			slog.Error("cannot read setting file, falling back to the plain env var",
+				"env", env+"_FILE", "path", path, "err", err)
+		} else {
+			// Trailing newline only — `echo secret > file` adds one, and a
+			// password may legitimately end in a space.
+			*dst = strings.TrimRight(string(b), "\r\n")
+			slog.Info("loaded setting from file", "env", env, "path", path)
+			return
+		}
+	}
 	if v, ok := os.LookupEnv(env); ok {
 		*dst = v
 	}
