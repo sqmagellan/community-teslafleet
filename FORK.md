@@ -216,9 +216,19 @@ authorship; everything added here is a separate commit. If upstream picks these
 changes up, the corresponding `fix/` branch disappears from this list on the next
 merge — which is the goal.
 
-## Note for whoever publishes this
+## Publishing
 
-Commits here are authored as `Ames Homelab <ames@localhost>` — a deliberate
-placeholder, because whether this fork carries a real name and where it is hosted
-has not been decided. Set `user.name`/`user.email` and rewrite the authorship
-before the first push if that matters to you.
+This fork is published under **sqmagellan** (`sqmagellan@gmail.com`), which is the
+authorship on every non-upstream commit here.
+
+Upstream commits keep their ORIGINAL hashes. When the placeholder authorship was
+rewritten, the first attempt ran `git filter-branch` over `--all` and silently
+rewrote upstream history too: filter-branch drops `gpgsig`, so every signed
+upstream commit got a new SHA and `upstream-main` stopped being a mirror that can
+`merge --ff-only upstream/main`. If you ever rewrite history here, scope it:
+
+```bash
+git filter-branch -f --env-filter ... -- --all --not <upstream-main tip>
+```
+
+and check `git rev-parse upstream-main` is unchanged afterwards.
