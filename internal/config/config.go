@@ -547,8 +547,22 @@ func (c *Config) validate() error {
 		if !c.HA.Enabled {
 			return fmt.Errorf("commands.enabled requires ha.enabled (commands arrive via HA MQTT)")
 		}
-		if c.Commands.ClientID == "" || c.Commands.RefreshToken == "" {
-			return fmt.Errorf("commands.enabled requires client_id and refresh_token")
+		if c.Commands.ClientID == "" {
+			return fmt.Errorf("commands.enabled requires client_id")
+		}
+		// A refresh token in the config is only ever a SEED. Tesla rotates the
+		// token on every refresh, so within seconds of first start the config
+		// value is stale and TokenCache holds the live one — the relay logs
+		// "loaded refresh token from cache" and ignores the config entirely.
+		//
+		// Requiring the config value anyway forced a stale credential to be kept
+		// forever in whatever holds it (a compose file, an add-on options blob),
+		// where it is the copy that gets leaked and the copy nobody dares delete.
+		// A non-empty cache file is better evidence that commands can work than
+		// the seed is.
+		if c.Commands.RefreshToken == "" && !hasCachedToken(c.Commands.TokenCache) {
+			return fmt.Errorf("commands.enabled requires refresh_token, or a non-empty token cache at %s",
+				tokenCacheDesc(c.Commands.TokenCache))
 		}
 		if c.Commands.ProxyURL == "" {
 			return fmt.Errorf("commands.proxy_url is required when commands.enabled")
@@ -593,6 +607,25 @@ func deriveID(vin string) int64 {
 		h *= 1099511628211
 	}
 	return int64(h%1_000_000_000_000) + 1
+}
+
+// hasCachedToken reports whether a rotated refresh token is already persisted.
+// Only non-emptiness is checked: validating the token itself would mean a network
+// call during config load, and a corrupt cache is the relay's problem to report,
+// with the error it actually got.
+func hasCachedToken(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Size() > 0
+}
+
+func tokenCacheDesc(path string) string {
+	if path == "" {
+		return "commands.token_cache (unset)"
+	}
+	return path
 }
 
 func setStr(dst *string, env string) {
