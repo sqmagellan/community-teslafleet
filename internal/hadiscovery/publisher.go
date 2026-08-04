@@ -401,7 +401,8 @@ func (p *Publisher) genericDiscoveryConfig(v config.Vehicle, field string, val a
 	if _, ok := val.(bool); ok {
 		c["payload_on"] = "true"
 		c["payload_off"] = "false"
-		c["value_template"] = fmt.Sprintf("{{ 'true' if value_json.%s else 'false' }}", field)
+		// See the note below on default(false): render-identical, warning-free.
+		c["value_template"] = fmt.Sprintf("{{ 'true' if value_json.%s | default(false) else 'false' }}", field)
 		return "binary_sensor", c
 	}
 	c["value_template"] = fmt.Sprintf("{{ value_json.%s | default('') }}", field)
@@ -631,7 +632,11 @@ func (p *Publisher) discoveryConfig(v config.Vehicle, e entity, dev, origin map[
 		if e.ValueTmpl != "" {
 			c["value_template"] = e.ValueTmpl
 		} else {
-			c["value_template"] = fmt.Sprintf("{{ '%s' if value_json.%s else '%s' }}", on, e.Key, off)
+			// default(false) keeps the RENDERED value identical (Jinja Undefined is already
+			// falsy) while stopping HA logging a template-variable warning for every optional
+			// key. The tire-warning keys are only present in snapshots that carried TPMS data,
+			// which produced 1,066,320 warnings / 235.6 MB of home-assistant.log by 2026-08-04.
+			c["value_template"] = fmt.Sprintf("{{ '%s' if value_json.%s | default(false) else '%s' }}", on, e.Key, off)
 		}
 	default: // sensor
 		c["value_template"] = p.valueTemplate(e)

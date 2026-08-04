@@ -119,7 +119,9 @@ func TestBinarySensorValueTemplate(t *testing.T) {
 			}
 			// Conceptually: a JSON true must render PayloadOn, false must render
 			// PayloadOff. Verify the template encodes exactly that mapping.
-			wantTpl := "{{ '" + tc.wantOn + "' if " + tc.wantInTpl + " else '" + tc.wantOff + "' }}"
+			// default(false) tolerates a key the gateway omits from snapshots that
+			// carry no data for it; it does not change what a present value renders.
+			wantTpl := "{{ '" + tc.wantOn + "' if " + tc.wantInTpl + " | default(false) else '" + tc.wantOff + "' }}"
 			if tpl != wantTpl {
 				t.Errorf("value_template = %q, want %q", tpl, wantTpl)
 			}
