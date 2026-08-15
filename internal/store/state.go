@@ -74,6 +74,17 @@ func isCharging(s Snapshot) bool {
 	return false
 }
 
+// CableTypeString normalizes a ChargingCableType enum ("CableTypeSAE") to the
+// bare form the Fleet API reports for conn_charge_cable ("SAE"). Returns "" when
+// the value is absent or not a string.
+func CableTypeString(v any) string {
+	s := asString(v)
+	if s == "" {
+		return ""
+	}
+	return strings.TrimPrefix(s, "CableType")
+}
+
 // ChargeStateString normalizes a DetailedChargeState enum ("DetailedChargeStateDisconnected")
 // to the plain value TeslaMate expects ("Disconnected"/"Charging"/"Stopped"/"Complete").
 func ChargeStateString(v any) string {
