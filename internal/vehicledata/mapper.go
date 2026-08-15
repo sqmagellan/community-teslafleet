@@ -112,7 +112,7 @@ func Build(snap store.Snapshot, d store.Derived, veh config.Vehicle, tmpl *Templ
 	if lim, ok := snap.Num(store.FieldChargeLimitSoc); ok {
 		cs["charge_limit_soc"] = int(lim)
 	}
-	if e, ok := snap.Num(store.FieldChargeEnergyIn); ok {
+	if e, ok := snap.ChargeEnergyAdded(); ok {
 		cs["charge_energy_added"] = round1(e)
 	}
 	if t, ok := snap.Num(store.FieldTimeToFullCharge); ok {
@@ -127,6 +127,14 @@ func Build(snap store.Snapshot, d store.Derived, veh config.Vehicle, tmpl *Templ
 	}
 	if b, ok := snap.Bool(store.FieldChargePortDoorOpen); ok {
 		cs["charge_port_door_open"] = b
+	}
+	if b, ok := snap.FastChargerPresent(); ok {
+		cs["fast_charger_present"] = b
+	}
+	if v, ok := snap.Field(store.FieldChargingCableType); ok {
+		if c := store.CableTypeString(v.Value); c != "" {
+			cs["conn_charge_cable"] = c
+		}
 	}
 	cs["charging_state"] = chargingState(snap, d)
 

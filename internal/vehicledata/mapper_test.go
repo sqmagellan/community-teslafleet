@@ -79,3 +79,146 @@ func TestBuild_MphInput(t *testing.T) {
 		t.Errorf("battery_range = %v, want 200 (mi passthrough)", r)
 	}
 }
+
+// TestBuild_ChargeEnergyAdded covers the DC fast-charging regression (the mapper
+// read only ACChargingEnergyIn, so a Supercharger session mapped to 0.00 kWh) and
+// the stale-counter trap that makes max(AC, DC) wrong: DCChargingEnergyIn was
+// observed holding 14.34 kWh while the car sat disconnected, so it must not win
+// during a later AC charge.
+func TestBuild_ChargeEnergyAdded(t *testing.T) {
+	cases := []struct {
+		name    string
+		acPower any
+		dcPower any
+		acEnrgy any
+		dcEnrgy any
+		want    float64
+		absent  bool
+	}{
+		{
+			name:    "dc charging uses dc counter",
+			acPower: float64(0), dcPower: float64(88),
+			acEnrgy: float64(0), dcEnrgy: float64(14.3),
+			want: 14.3,
+		},
+		{
+			name:    "ac charging ignores stale dc counter",
+			acPower: float64(7), dcPower: float64(0),
+			acEnrgy: float64(6.2), dcEnrgy: float64(14.34),
+			want: 6.2,
+		},
+		{
+			name:    "idle trickle below floor is not dc charging",
+			acPower: float64(7), dcPower: float64(0.099),
+			acEnrgy: float64(3.1), dcEnrgy: float64(28.92),
+			want: 3.1,
+		},
+		{
+			name:    "not charging falls back to ac counter",
+			acPower: float64(0), dcPower: float64(0),
+			acEnrgy: float64(2.5), dcEnrgy: float64(14.34),
+			want: 2.5,
+		},
+		{
+			name:    "no counters at all omits the key",
+			acPower: float64(0), dcPower: float64(0),
+			acEnrgy: nil, dcEnrgy: nil,
+			absent: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vin := "5YJ3TESTVIN000002"
+			st := store.New(vin)
+			st.SetField(vin, store.FieldSoc, float64(50))
+			if tc.acPower != nil {
+				st.SetField(vin, store.FieldACChargingPower, tc.acPower)
+			}
+			if tc.dcPower != nil {
+				st.SetField(vin, store.FieldDCChargingPower, tc.dcPower)
+			}
+			if tc.acEnrgy != nil {
+				st.SetField(vin, store.FieldChargeEnergyIn, tc.acEnrgy)
+			}
+			if tc.dcEnrgy != nil {
+				st.SetField(vin, store.FieldDCChargingEnergyIn, tc.dcEnrgy)
+			}
+			st.SetConnectivity(vin, "online")
+
+			snap, _ := st.Snapshot(vin)
+			now := time.Now()
+			d := store.Derive(snap, config.State{OnlineGraceSeconds: 60, StaleAfterSeconds: 660}, now)
+			veh := config.Vehicle{VIN: vin, ID: 1, VehicleID: 1, DisplayName: "Test"}
+			tmpl, _ := LoadTemplate("")
+			units := config.Units{RangeInput: "km", SpeedInput: "kmh", OdometerInput: "km"}
+			cs := Build(snap, d, veh, tmpl, units, now)["charge_state"].(map[string]any)
+
+			got, present := cs["charge_energy_added"]
+			if tc.absent {
+				if present {
+					t.Fatalf("charge_energy_added = %v, want key absent", got)
+				}
+				return
+			}
+			if !present {
+				t.Fatalf("charge_energy_added missing")
+			}
+			if g := got.(float64); g != tc.want {
+				t.Errorf("charge_energy_added = %v, want %v", g, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuild_FastChargerAndCable covers the two fields the mapper never emitted:
+// 0 of 2075 charge rows carried fast_charger_present or conn_charge_cable after
+// the gateway took over, so a Supercharger stop was indistinguishable from a home
+// charge.
+func TestBuild_FastChargerAndCable(t *testing.T) {
+	cases := []struct {
+		name      string
+		dcPower   float64
+		cable     any
+		wantFast  bool
+		wantCable string
+	}{
+		{name: "supercharging", dcPower: 88, cable: "CableTypeSAE", wantFast: true, wantCable: "SAE"},
+		{name: "ac charging", dcPower: 0, cable: "CableTypeSAE", wantFast: false, wantCable: "SAE"},
+		{name: "idle trickle", dcPower: 0.099, cable: "CableTypeSAE", wantFast: false, wantCable: "SAE"},
+		{name: "unprefixed cable passes through", dcPower: 0, cable: "SAE", wantFast: false, wantCable: "SAE"},
+		{name: "no cable field", dcPower: 0, cable: nil, wantFast: false, wantCable: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vin := "5YJ3TESTVIN000004"
+			st := store.New(vin)
+			st.SetField(vin, store.FieldSoc, float64(50))
+			st.SetField(vin, store.FieldDCChargingPower, tc.dcPower)
+			if tc.cable != nil {
+				st.SetField(vin, store.FieldChargingCableType, tc.cable)
+			}
+			st.SetConnectivity(vin, "online")
+
+			snap, _ := st.Snapshot(vin)
+			now := time.Now()
+			d := store.Derive(snap, config.State{OnlineGraceSeconds: 60, StaleAfterSeconds: 660}, now)
+			veh := config.Vehicle{VIN: vin, ID: 1, VehicleID: 1, DisplayName: "Test"}
+			tmpl, _ := LoadTemplate("")
+			units := config.Units{RangeInput: "km", SpeedInput: "kmh", OdometerInput: "km"}
+			cs := Build(snap, d, veh, tmpl, units, now)["charge_state"].(map[string]any)
+
+			if got := cs["fast_charger_present"]; got != tc.wantFast {
+				t.Errorf("fast_charger_present = %v, want %v", got, tc.wantFast)
+			}
+			if tc.wantCable == "" {
+				if got, ok := cs["conn_charge_cable"]; ok {
+					t.Errorf("conn_charge_cable = %v, want key absent", got)
+				}
+				return
+			}
+			if got := cs["conn_charge_cable"]; got != tc.wantCable {
+				t.Errorf("conn_charge_cable = %v, want %v", got, tc.wantCable)
+			}
+		})
+	}
+}

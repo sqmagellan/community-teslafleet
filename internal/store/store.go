@@ -43,6 +43,7 @@ const (
 	FieldChargePortLatch    = "ChargePortLatch"
 	FieldChargingCableType  = "ChargingCableType"
 	FieldChargeEnergyIn     = "ACChargingEnergyIn"
+	FieldDCChargingEnergyIn  = "DCChargingEnergyIn"
 	FieldTimeToFullCharge   = "TimeToFullCharge"
 	FieldChargerVoltage     = "ChargerVoltage"
 	FieldChargeAmps         = "ChargeAmps"
@@ -173,6 +174,45 @@ func (s Snapshot) ChargerPower() (float64, bool) {
 		}
 	}
 	return max, found
+}
+
+// dcPowerFloor is the kW below which DCChargingPower is treated as not charging.
+// A parked car reports a small non-zero trickle (0.099 kW observed) rather than a
+// clean zero, so a plain > 0 test would misread idle as DC charging.
+const dcPowerFloor = 1.0
+
+// ChargeEnergyAdded returns the session energy counter in kWh for whichever cable
+// is actually delivering power, and whether a counter was found.
+//
+// FieldChargeEnergyIn is the AC-only counter ("ACChargingEnergyIn"); reading it
+// alone reported 0.00 kWh for every DC fast-charging session. The two counters do
+// NOT both reset -- DCChargingEnergyIn was observed holding 14.34 kWh while the
+// car sat DetailedChargeStateDisconnected -- so max(AC, DC) would let a stale DC
+// value win during a later AC charge. Pick by active cable instead, and fall back
+// to the AC counter when nothing is charging so idle behaviour is unchanged.
+func (s Snapshot) ChargeEnergyAdded() (float64, bool) {
+	if p, ok := s.Num(FieldDCChargingPower); ok && p >= dcPowerFloor {
+		if v, ok := s.Num(FieldDCChargingEnergyIn); ok {
+			return v, true
+		}
+	}
+	if p, ok := s.Num(FieldACChargingPower); ok && p > 0 {
+		if v, ok := s.Num(FieldChargeEnergyIn); ok {
+			return v, true
+		}
+	}
+	return s.Num(FieldChargeEnergyIn)
+}
+
+// FastChargerPresent reports whether DC fast charging is active. Telemetry has no
+// FastChargerPresent field, so it is derived from DC power; the Fleet API sets the
+// flag exactly when a DC cable is delivering.
+func (s Snapshot) FastChargerPresent() (bool, bool) {
+	p, ok := s.Num(FieldDCChargingPower)
+	if !ok {
+		return false, false
+	}
+	return p >= dcPowerFloor, true
 }
 
 type vehicle struct {
