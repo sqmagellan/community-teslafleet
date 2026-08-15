@@ -83,7 +83,7 @@ func Build(snap store.Snapshot, d store.Derived, veh config.Vehicle, tmpl *Templ
 	if lim, ok := snap.Num(store.FieldChargeLimitSoc); ok {
 		cs["charge_limit_soc"] = int(lim)
 	}
-	if e, ok := snap.Num(store.FieldChargeEnergyIn); ok {
+	if e, ok := snap.ChargeEnergyAdded(); ok {
 		cs["charge_energy_added"] = round1(e)
 	}
 	if t, ok := snap.Num(store.FieldTimeToFullCharge); ok {

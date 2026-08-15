@@ -43,6 +43,7 @@ const (
 	FieldChargePortLatch    = "ChargePortLatch"
 	FieldChargingCableType  = "ChargingCableType"
 	FieldChargeEnergyIn     = "ACChargingEnergyIn"
+	FieldDCChargingEnergyIn  = "DCChargingEnergyIn"
 	FieldTimeToFullCharge   = "TimeToFullCharge"
 	FieldChargerVoltage     = "ChargerVoltage"
 	FieldChargeAmps         = "ChargeAmps"
@@ -165,6 +166,26 @@ func (s Snapshot) ChargerPower() (float64, bool) {
 	var max float64
 	var found bool
 	for _, f := range []string{FieldACChargingPower, FieldDCChargingPower} {
+		if v, ok := s.Num(f); ok {
+			found = true
+			if v > max {
+				max = v
+			}
+		}
+	}
+	return max, found
+}
+
+// ChargeEnergyAdded returns max(FieldChargeEnergyIn, FieldDCChargingEnergyIn) in
+// kWh and whether either field was present. FieldChargeEnergyIn is the AC-only
+// counter ("ACChargingEnergyIn"); reading it alone reported 0.00 kWh for every
+// DC fast-charging session. Both counters reset at the start of a session and
+// only the one matching the active cable advances, so the larger of the two is
+// the energy added this session.
+func (s Snapshot) ChargeEnergyAdded() (float64, bool) {
+	var max float64
+	var found bool
+	for _, f := range []string{FieldChargeEnergyIn, FieldDCChargingEnergyIn} {
 		if v, ok := s.Num(f); ok {
 			found = true
 			if v > max {
