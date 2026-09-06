@@ -322,7 +322,11 @@ func LoadRaw(path string) (Config, error) {
 	}
 	migrate(&cfg)
 	applyOptions(&cfg) // HA add-on options.json (no-op when absent, e.g. standalone)
+	fileErr = nil
 	applyEnv(&cfg)
+	if fileErr != nil {
+		return cfg, fileErr
+	}
 	return cfg, nil
 }
 
@@ -588,6 +592,14 @@ func (c *Config) validate() error {
 		if c.Commands.ProxyURL == "" {
 			return fmt.Errorf("commands.proxy_url is required when commands.enabled")
 		}
+		// Embedded mode supervises fleet-telemetry but NOT the vehicle-command
+		// proxy, so the compose service name in the default proxy_url resolves to
+		// nothing inside the add-on and every command fails at send time. Refuse
+		// at startup instead: a wrong URL is a config error, not a runtime mystery.
+		if c.Stream.Embedded && strings.Contains(c.Commands.ProxyURL, "//vehicle-command-proxy") {
+			return fmt.Errorf("stream.embedded does not run a vehicle-command proxy yet: " +
+				"set commands.proxy_url to a reachable proxy, or disable commands")
+		}
 	}
 	return nil
 }
@@ -660,28 +672,35 @@ func tokenCacheDesc(path string) string {
 // _FILE wins when both are set. That direction matters: migrating a secret out
 // of an environment variable must not silently keep reading the stale inline
 // copy you are trying to delete.
+//
+// An unreadable _FILE is FATAL, recorded in fileErr and returned by LoadRaw. It
+// used to fall back to the plain variable, which for an authentication setting
+// is fail-open: TGW_DEBUG_TOKEN_FILE pointing at a bad path left the debug token
+// empty, and an empty debug token means "allow". A misconfigured secret must
+// stop the process, not quietly downgrade it.
 func setStr(dst *string, env string) {
 	if path, ok := os.LookupEnv(env + "_FILE"); ok && path != "" {
 		b, err := os.ReadFile(path)
 		if err != nil {
-			// Deliberately fall through to the plain variable instead of leaving
-			// the value empty: a typo'd path must not silently look like "this
-			// setting was never configured", which for a credential surfaces as
-			// a confusing auth failure somewhere far away.
-			slog.Error("cannot read setting file, falling back to the plain env var",
-				"env", env+"_FILE", "path", path, "err", err)
-		} else {
-			// Trailing newline only — `echo secret > file` adds one, and a
-			// password may legitimately end in a space.
-			*dst = strings.TrimRight(string(b), "\r\n")
-			slog.Info("loaded setting from file", "env", env, "path", path)
+			if fileErr == nil {
+				fileErr = fmt.Errorf("read %s=%q: %w", env+"_FILE", path, err)
+			}
 			return
 		}
+		// Trailing newline only — `echo secret > file` adds one, and a
+		// password may legitimately end in a space.
+		*dst = strings.TrimRight(string(b), "\r\n")
+		slog.Info("loaded setting from file", "env", env, "path", path)
+		return
 	}
 	if v, ok := os.LookupEnv(env); ok {
 		*dst = v
 	}
 }
+
+// fileErr holds the first _FILE read failure seen during applyEnv. Config is
+// loaded once, from one goroutine, before anything else starts.
+var fileErr error
 
 func setBool(dst *bool, env string) {
 	if v, ok := os.LookupEnv(env); ok {
