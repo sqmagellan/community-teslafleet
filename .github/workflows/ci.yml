@@ -29,18 +29,16 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      - name: gofmt (changed files only)
-        # The tree carries pre-existing formatting drift (struct alignment).
-        # Reformatting it wholesale would conflict on every upstream merge, so
-        # hold only changed files to the standard.
+      - name: gofmt (no NEW drift)
+        # Shared with the deploy gate: .github/gofmt-drift.sh is the single
+        # definition of "gofmt passes". This used to be `gofmt -l $changed`,
+        # which fails the moment you touch one of the files carrying drift
+        # inherited from upstream -- six of them -- so a change could be clean
+        # locally and red on push.
         run: |
           base="${{ github.event.pull_request.base.sha }}"
           if [ -z "$base" ]; then base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"; fi
-          changed=$(git diff --name-only "$base" HEAD -- '*.go' | tr '\n' ' ')
-          if [ -z "${changed// /}" ]; then echo "no .go changes"; exit 0; fi
-          echo "checking: $changed"
-          out=$(gofmt -l $changed)
-          if [ -n "$out" ]; then echo "not gofmt-clean:"; echo "$out"; exit 1; fi
+          .github/gofmt-drift.sh "$base"
 
       - name: go vet
         run: go vet ./...
