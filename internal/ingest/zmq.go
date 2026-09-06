@@ -46,6 +46,11 @@ type Consumer struct {
 	// the loop is about to Recv() on.
 	mu  sync.Mutex
 	sub zmq4.Socket
+
+	// wg tracks the single consuming goroutine so Stop() can JOIN it. Cancelling
+	// the context only asks it to finish; without the join, a message already
+	// being applied to the store can land after the shutdown snapshot was written.
+	wg sync.WaitGroup
 }
 
 // Connected reports whether the SUB socket is currently dialled. It is false
@@ -83,7 +88,9 @@ func NewConsumer(cfg config.Ingest, st *store.Store, rec *recorder.Recorder, log
 func (c *Consumer) Start() error {
 	if err := c.dial(); err != nil {
 		c.log.Warn("zmq ingest not reachable yet — retrying in background", "addr", c.addr, "err", err)
+		c.wg.Add(1)
 		go func() {
+			defer c.wg.Done()
 			if !c.reconnect() { // blocks (with backoff) until connected or ctx cancelled
 				return
 			}
@@ -91,7 +98,11 @@ func (c *Consumer) Start() error {
 		}()
 		return nil
 	}
-	go c.loop()
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.loop()
+	}()
 	return nil
 }
 
@@ -118,8 +129,9 @@ func (c *Consumer) dial() error {
 		_ = sub.Close()
 		return err
 	}
-	c.setSocket(sub)
-	c.connected.Store(true)
+	if !c.setSocket(sub) {
+		return c.ctx.Err()
+	}
 	c.log.Info("zmq ingest connected", "addr", c.addr)
 	return nil
 }
@@ -154,14 +166,25 @@ func (c *Consumer) reconnect() bool {
 // setSocket publishes a freshly dialled socket, closing any predecessor. The
 // close happens OUTSIDE the lock: closing a zmq socket can block, and a blocked
 // close while holding mu would stall Stop().
-func (c *Consumer) setSocket(s zmq4.Socket) {
+//
+// Returns false if Stop() already ran. Installing then would resurrect a socket
+// the shutdown path had already cleared, and set connected=true after Stop
+// returned — the reconnect loop can be mid-dial when the signal arrives.
+func (c *Consumer) setSocket(s zmq4.Socket) bool {
 	c.mu.Lock()
+	if c.ctx.Err() != nil {
+		c.mu.Unlock()
+		_ = s.Close()
+		return false
+	}
 	old := c.sub
 	c.sub = s
+	c.connected.Store(true)
 	c.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
 	}
+	return true
 }
 
 // closeSocket closes the current socket and clears it, so a subsequent close is
@@ -170,6 +193,7 @@ func (c *Consumer) closeSocket() {
 	c.mu.Lock()
 	old := c.sub
 	c.sub = nil
+	c.connected.Store(false)
 	c.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
@@ -184,10 +208,22 @@ func (c *Consumer) socket() zmq4.Socket {
 	return c.sub
 }
 
+// Stop cancels the consumer, closes the socket, and waits for the consuming
+// goroutine to finish, so no store write can land after Stop() returns. The
+// wait is bounded: a zmq Recv() that never unblocks must not hang shutdown.
 func (c *Consumer) Stop() {
 	c.cancel()
-	c.connected.Store(false)
 	c.closeSocket()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.wg.Wait()
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		c.log.Warn("zmq consumer did not stop within 3s")
+	}
 }
 
 func (c *Consumer) loop() {

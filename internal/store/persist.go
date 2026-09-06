@@ -86,7 +86,12 @@ func (s *Store) Load(path string) (int, error) {
 		}
 		// Restore LastV/connectivity so Derive still reports the car as
 		// asleep/offline after a restart (the timestamps are old on purpose).
-		if pv.Connectivity != "" {
+		//
+		// "online" is deliberately NOT restored: it describes the previous
+		// process's live link, and Derive trusts it unconditionally. Restoring it
+		// pins a car that went to sleep during the downtime permanently online,
+		// with no event able to clear it, because a sleeping car sends nothing.
+		if pv.Connectivity != "" && pv.Connectivity != "online" {
 			v.connectivity = pv.Connectivity
 			v.connAt = pv.ConnAt
 		}

@@ -4,8 +4,10 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -31,6 +33,22 @@ type Options struct {
 	ProxyURL   string // vehicle-command proxy (for enroll)
 	EnrollFile string // ftc.json path to POST on enroll
 	TokenCache string // where to persist the obtained refresh token (relay reads this)
+
+	// Tokens, when non-nil, is the single owner of the OAuth credential -- the
+	// command relay. Tesla rotates the refresh token on every use, so the wizard
+	// must not run its own refresh alongside it: whichever call loses the race
+	// spends a token the other still holds and the account is stranded. The
+	// wizard falls back to refreshing for itself only when commands are off and
+	// there is no relay to defer to.
+	Tokens TokenOwner
+}
+
+// TokenOwner is the narrow slice of the command relay the wizard needs. Keeping
+// it an interface here means onboard does not import commands, which would be a
+// cycle.
+type TokenOwner interface {
+	AccessToken() (string, error)
+	SetRefreshToken(string) error
 }
 
 // State is the persisted onboarding progress (no secrets in here; the private key and
@@ -105,10 +123,11 @@ func atomicWrite(path string, b []byte, mode os.FileMode) error {
 
 // Server is the onboarding wizard.
 type Server struct {
-	store *Store
-	opts  Options
-	log   *slog.Logger
-	tmpl  *template.Template
+	store   *Store
+	opts    Options
+	log     *slog.Logger
+	tmpl    *template.Template
+	tokenMu sync.Mutex // serializes refresh-and-persist against itself
 }
 
 func NewServer(opts Options, log *slog.Logger) (*Server, error) {
@@ -168,9 +187,27 @@ func (s *Server) WellKnownHandler() http.Handler {
 	return mux
 }
 
+// auth guards the wizard. Every handler behind it can replace the signing
+// keypair, the partner domain, or the stored refresh token, so "no password
+// configured" must not mean "open to the network".
+//
+// With a password: Basic Auth. Without one: loopback only. The HA add-on runs
+// behind the Supervisor's ingress proxy, which reaches us over loopback, so
+// that path keeps working; a standalone listener on :8099 no longer serves the
+// LAN unless a password is set.
 func (s *Server) auth(next http.Handler) http.Handler {
 	if s.opts.Password == "" {
-		return next
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
+				s.log.Warn("rejected non-loopback onboarding request (no password configured)",
+					"remote_addr", r.RemoteAddr)
+				http.Error(w, "forbidden: set a password to use the wizard over the network",
+					http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, pw, ok := r.BasicAuth()
@@ -297,27 +334,27 @@ func (s *Server) pasteToken(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "✗ Paste a refresh token.")
 		return
 	}
-	if s.opts.TokenCache != "" {
-		if err := atomicWrite(s.opts.TokenCache, []byte(tok), 0o600); err != nil {
-			s.render(w, r, "✗ Could not write token cache: "+err.Error())
-			return
-		}
+	if err := s.saveRefreshToken(tok); err != nil {
+		s.render(w, r, "✗ Could not save the refresh token: "+err.Error())
+		return
 	}
 	s.store.mu.Lock()
 	s.store.st.TokenSet = true
 	_ = s.store.saveState()
 	s.store.mu.Unlock()
-	s.render(w, r, "✓ Refresh token saved. Restart the gateway to use it for commands.")
+	msg := "✓ Refresh token saved. Restart the gateway to use it for commands."
+	if s.opts.Tokens != nil {
+		msg = "✓ Refresh token saved and in use. No restart needed."
+	}
+	s.render(w, r, msg)
 }
 
 func (s *Server) listVehicles(w http.ResponseWriter, r *http.Request) {
 	tok := strings.TrimSpace(r.FormValue("access_token"))
 	if tok == "" {
 		// Try to mint an access token from the saved refresh token.
-		if rt := s.readTokenCache(); rt != "" {
-			if at, err := s.client().refresh(rt); err == nil {
-				tok = at
-			}
+		if at, err := s.accessToken(); err == nil {
+			tok = at
 		}
 	}
 	if tok == "" {
@@ -368,12 +405,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "✗ No enrollment file at "+s.opts.EnrollFile+" — set intervals on the Enrollment page first.")
 		return
 	}
-	rt := s.readTokenCache()
-	if rt == "" {
-		s.render(w, r, "✗ Save a refresh token first.")
-		return
-	}
-	at, err := s.client().refresh(rt)
+	at, err := s.accessToken()
 	if err != nil {
 		s.render(w, r, "✗ Token refresh failed: "+err.Error())
 		return
@@ -383,6 +415,57 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, "✓ Telemetry config sent. The car adopts it within a minute (poll synced).")
+}
+
+// accessToken mints an access token from the saved refresh token.
+//
+// When the command relay is running it owns the credential and this delegates
+// to it. Tesla rotates the refresh token on every use, so two independent
+// refreshers is not a race that can be tuned away: whichever loses spends a
+// token the other still holds.
+//
+// Standalone (commands disabled, no relay) the wizard refreshes for itself, and
+// must persist the replacement Tesla hands back -- discarding it left the cache
+// holding a spent credential, so the next enroll or restart failed to
+// authenticate with nothing pointing at the cause.
+func (s *Server) accessToken() (string, error) {
+	if s.opts.Tokens != nil {
+		return s.opts.Tokens.AccessToken()
+	}
+	s.tokenMu.Lock()
+	defer s.tokenMu.Unlock()
+	rt := s.readTokenCache()
+	if rt == "" {
+		return "", fmt.Errorf("no refresh token saved")
+	}
+	t, err := s.client().refresh(rt)
+	if err != nil {
+		return "", err
+	}
+	if t.Refresh != "" && t.Refresh != rt && s.opts.TokenCache != "" {
+		if err := atomicWrite(s.opts.TokenCache, []byte(t.Refresh), 0o600); err != nil {
+			// The old token is already spent, so failing to record the new one
+			// loses the credential entirely. Say so loudly.
+			s.log.Error("could not persist rotated refresh token — re-paste one in the wizard",
+				"path", s.opts.TokenCache, "err", err)
+			return "", fmt.Errorf("persist rotated refresh token: %w", err)
+		}
+	}
+	return t.Access, nil
+}
+
+// saveRefreshToken adopts an operator-pasted token through the owner, so the
+// relay picks it up immediately instead of serving the one it read at startup.
+func (s *Server) saveRefreshToken(tok string) error {
+	if s.opts.Tokens != nil {
+		return s.opts.Tokens.SetRefreshToken(tok)
+	}
+	s.tokenMu.Lock()
+	defer s.tokenMu.Unlock()
+	if s.opts.TokenCache == "" {
+		return nil
+	}
+	return atomicWrite(s.opts.TokenCache, []byte(tok), 0o600)
 }
 
 func (s *Server) readTokenCache() string {

@@ -31,7 +31,7 @@ func healthFixture(t *testing.T, staleAfter int) (*Server, *store.Store, func(ti
 	st.SetClock(func() time.Time { return clock })
 	cfg := &config.Config{
 		State: config.State{StaleAfterSeconds: staleAfter},
-		// /debug/state is opt-in as of the debug-gate change; these tests read it.
+		// /debug/state is opt-in; these tests assert on what it exposes.
 		Debug:    config.Debug{StateEnabled: true},
 		Vehicles: []config.Vehicle{{VIN: testVIN, ID: 1, VehicleID: 2}},
 	}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -57,6 +58,14 @@ func main() {
 	var bg sync.WaitGroup
 	defer waitBackground(&bg, log)
 
+	// The state snapshotter runs on its OWN context, cancelled only after ingest
+	// has been stopped. Sharing the signal context raced: SIGTERM triggered the
+	// final Save at the same instant the consumer was still applying its last
+	// message, so an accepted update could be missing from disk after a clean
+	// shutdown. Deferred here, so it runs immediately before waitBackground.
+	persistCtx, cancelPersist := context.WithCancel(context.Background())
+	defer cancelPersist()
+
 	// All-in-one mode (HA add-on): run fleet-telemetry — and the vehicle-command
 	// proxy when commands are enabled — as supervised child processes, and ingest
 	// from the dispatcher they bind locally. Standalone leaves this off and runs
@@ -97,6 +106,38 @@ func main() {
 			Path: cfg.Stream.FleetTelemetryBin,
 			Args: []string{"-config", cfg.Stream.FleetTelemetryConfig},
 		})
+		// The vehicle-command proxy, when commands are on. Without this the
+		// add-on shipped the binary, configured its path, and never ran it, so
+		// the default proxy_url named a Compose service that does not resolve
+		// here and every command failed at send time.
+		//
+		// Loopback only: this endpoint signs commands with the car's private key
+		// and must not be reachable from the network. The relay dials it with
+		// verification off, so a self-signed cert of its own is enough -- it does
+		// not borrow the telemetry key, which may be a real one.
+		if cfg.Commands.Enabled {
+			dir := filepath.Dir(cfg.Stream.FleetTelemetryConfig)
+			pCert := filepath.Join(dir, "certs", "proxy-cert.pem")
+			pKey := filepath.Join(dir, "certs", "proxy-key.pem")
+			if _, err := streamcfg.EnsureSelfSigned(pCert, pKey, "localhost"); err != nil {
+				log.Error("could not generate the command proxy's TLS cert", "err", err)
+			}
+			port := strconv.Itoa(cfg.Stream.ProxyPort)
+			cfg.Commands.ProxyURL = "https://127.0.0.1:" + port
+			sup.Add(supervisor.Process{
+				Name: "vehicle-command-proxy",
+				Path: cfg.Stream.ProxyBin,
+				Env: []string{
+					"TESLA_HTTP_PROXY_HOST=127.0.0.1",
+					"TESLA_HTTP_PROXY_PORT=" + port,
+					"TESLA_HTTP_PROXY_TIMEOUT=30s",
+					"TESLA_HTTP_PROXY_TLS_CERT=" + pCert,
+					"TESLA_HTTP_PROXY_TLS_KEY=" + pKey,
+					"TESLA_KEY_FILE=" + filepath.Join(cfg.Onboard.DataDir, "private-key.pem"),
+				},
+			})
+			log.Info("embedded command proxy", "url", cfg.Commands.ProxyURL)
+		}
 		// Ingest from the local dispatcher the embedded fleet-telemetry binds.
 		cfg.Ingest.ZMQAddr = localZMQ(cfg.Stream.ZMQBind)
 		sup.Start(ctx)
@@ -123,7 +164,7 @@ func main() {
 		bg.Add(1)
 		go func() {
 			defer bg.Done()
-			st.Persist(ctx, p, 30*time.Second, log)
+			st.Persist(persistCtx, p, 30*time.Second, log)
 		}()
 	}
 
@@ -189,6 +230,12 @@ func main() {
 			ProxyURL:   cfg.Commands.ProxyURL,
 			EnrollFile: cfg.Commands.EnrollFile,
 			TokenCache: cfg.Commands.TokenCache,
+		}
+		// One owner for the rotating credential. With the relay up, the wizard
+		// refreshes through it instead of alongside it, and a pasted token takes
+		// effect without a restart.
+		if relay != nil {
+			obOpts.Tokens = relay
 		}
 		if ob, err := onboard.NewServer(obOpts, log); err != nil {
 			log.Error("onboard init failed", "err", err)

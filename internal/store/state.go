@@ -59,17 +59,25 @@ func isDriving(s Snapshot) bool {
 }
 
 func isCharging(s Snapshot) bool {
-	for _, f := range []string{FieldACChargingPower, FieldDCChargingPower} {
-		if v, ok := s.Field(f); ok {
-			if pw, ok := ToFloat(v.Value); ok && pw > 0 {
-				return true
-			}
+	// An explicit DetailedChargeState is the vehicle's own verdict and outranks
+	// any power reading. Without this, a disconnected car that is still reporting
+	// residual DC power reads as "charging" and TeslaMate opens a phantom charge
+	// session that never closes.
+	if v, ok := s.Field(FieldChargeState); ok {
+		switch ChargeStateString(v.Value) {
+		case "Charging":
+			return true
+		case "Disconnected", "Complete", "NoPower", "Stopped":
+			return false
 		}
 	}
-	if v, ok := s.Field(FieldChargeState); ok {
-		if strings.EqualFold(ChargeStateString(v.Value), "Charging") {
-			return true
-		}
+	// DCChargingPower decays to a small residual rather than a clean 0, so it
+	// needs the same floor ChargerPower() applies. AC power does reach 0.
+	if p, ok := s.Num(FieldDCChargingPower); ok && p >= dcPowerFloor {
+		return true
+	}
+	if p, ok := s.Num(FieldACChargingPower); ok && p > 0 {
+		return true
 	}
 	return false
 }

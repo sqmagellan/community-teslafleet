@@ -32,8 +32,22 @@ func Build(snap store.Snapshot, d store.Derived, veh config.Vehicle, tmpl *Templ
 	vs := subObj(resp, "vehicle_state")
 	vc := subObj(resp, "vehicle_config")
 
-	tsSec := now.Unix()
-	tsMs := now.UnixMilli()
+	// Section timestamps are the OBSERVATION time, not the time this document
+	// was rendered. TeslaMate stores a streamed position's date verbatim
+	// (vehicle.ex create_position/2) and compares drive_state.timestamp across
+	// both paths, so stamping "now" on frozen values told it the car had a new
+	// fix at this instant at the old coordinates. Falling back to now only when
+	// nothing has ever been streamed keeps a first boot sane.
+	//
+	// Repeats are safe on both of TeslaMate's guards: a fetch is discarded only
+	// when strictly older (`now < last`) and stream data only when the stored
+	// timestamp is strictly greater, so an unchanged observation is accepted.
+	obs := now
+	if !snap.LastV.IsZero() {
+		obs = snap.LastV
+	}
+	tsSec := obs.Unix()
+	tsMs := obs.UnixMilli()
 	ds["timestamp"], cs["timestamp"], cls["timestamp"], vs["timestamp"] = tsMs, tsMs, tsMs, tsMs
 
 	// ---- drive_state ----
@@ -65,7 +79,7 @@ func Build(snap store.Snapshot, d store.Derived, veh config.Vehicle, tmpl *Templ
 		ds["speed"] = nil
 		ds["shift_state"] = nil
 	}
-	ds["power"] = drivePower(snap)
+	ds["power"] = drivePower(snap, d)
 
 	// ---- charge_state ----
 	// battery_level and usable_battery_level are DIFFERENT numbers on a real car:
@@ -213,12 +227,50 @@ func chargingState(snap store.Snapshot, d store.Derived) string {
 	return "Disconnected"
 }
 
-// drivePower returns kW: negative while charging, telemetry-derived otherwise.
-func drivePower(snap store.Snapshot) int {
+// drivePower returns kW: negative while charging, pack power while driving.
+//
+// Sign convention follows the Fleet API: charging is negative, discharging
+// positive. PackCurrent decays to a small residual when parked and never
+// reaches a clean 0, so pack power is only reported while the car is actually
+// moving -- otherwise a parked car reports a permanent trickle.
+//
+// PackVoltage/PackCurrent must be enrolled in the telemetry field set for this
+// to produce anything; without them power stays 0, as it did before.
+func drivePower(snap store.Snapshot, d store.Derived) int {
 	if p, ok := snap.ChargerPower(); ok && p > 0 {
 		return -int(p)
 	}
+	if d.Driving {
+		if kw, ok := PackPowerKW(snap); ok {
+			return int(math.Round(kw))
+		}
+	}
 	return 0
+}
+
+// PackPowerKW is instantaneous DC pack power in kW, derived from voltage and
+// current. Reported only when both fields are present.
+func PackPowerKW(snap store.Snapshot) (float64, bool) {
+	v, vok := snap.Num(store.FieldPackVoltage)
+	a, aok := snap.Num(store.FieldPackCurrent)
+	if !vok || !aok {
+		return 0, false
+	}
+	return v * a / 1000, true
+}
+
+// DisplayedSOC is the battery percentage the Fleet API reports, rounded the way
+// Tesla rounds it. BatteryLevel is the DISPLAYED charge; Soc is the usable
+// figure and reads about half a point lower, so the two must not be mixed
+// between the HTTP and WebSocket paths for the same instant.
+func DisplayedSOC(snap store.Snapshot) (int, bool) {
+	if v, ok := snap.Num(store.FieldBatteryLevel); ok {
+		return pct(v), true
+	}
+	if v, ok := snap.Num(store.FieldSoc); ok {
+		return pct(v), true
+	}
+	return 0, false
 }
 
 // subObj returns m[key] as map[string]any, creating it if missing or wrong type.

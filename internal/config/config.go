@@ -69,6 +69,10 @@ type Stream struct {
 	// ProxyBin is the tesla vehicle-command HTTP proxy binary (started only when
 	// commands are enabled).
 	ProxyBin string `yaml:"proxy_bin"`
+	// ProxyPort is the loopback port the embedded vehicle-command proxy listens
+	// on. Loopback only: it signs commands with the car's private key and must
+	// not be reachable from the network.
+	ProxyPort int `yaml:"proxy_port"`
 	// TelemetryPort is the port fleet-telemetry listens on for the car's mTLS stream
 	// (the car dials in here). The public/forwarded port is advertised at enrollment.
 	TelemetryPort int `yaml:"telemetry_port"`
@@ -295,6 +299,7 @@ func Defaults() Config {
 			FleetTelemetryBin:    "/usr/local/bin/fleet-telemetry",
 			FleetTelemetryConfig: "/data/fleet-telemetry/config.json",
 			ProxyBin:             "/usr/local/bin/tesla-http-proxy",
+			ProxyPort:            4444,
 			TelemetryPort:        4443,
 			ZMQBind:              "tcp://0.0.0.0:5284",
 		},
@@ -322,7 +327,11 @@ func LoadRaw(path string) (Config, error) {
 	}
 	migrate(&cfg)
 	applyOptions(&cfg) // HA add-on options.json (no-op when absent, e.g. standalone)
+	fileErr = nil
 	applyEnv(&cfg)
+	if fileErr != nil {
+		return cfg, fileErr
+	}
 	return cfg, nil
 }
 
@@ -589,6 +598,17 @@ func (c *Config) validate() error {
 			return fmt.Errorf("commands.proxy_url is required when commands.enabled")
 		}
 	}
+	// Embedded mode supervises the vehicle-command proxy itself and rewrites
+	// proxy_url to loopback, so the two ports must not collide -- a clash would
+	// surface as fleet-telemetry or the proxy crash-looping on bind.
+	if c.Stream.Embedded && c.Commands.Enabled {
+		if c.Stream.ProxyPort <= 0 {
+			return fmt.Errorf("stream.proxy_port is required when stream.embedded and commands.enabled")
+		}
+		if c.Stream.ProxyPort == c.Stream.TelemetryPort {
+			return fmt.Errorf("stream.proxy_port (%d) collides with stream.telemetry_port", c.Stream.ProxyPort)
+		}
+	}
 	return nil
 }
 
@@ -660,29 +680,35 @@ func tokenCacheDesc(path string) string {
 // _FILE wins when both are set. That direction matters: migrating a secret out
 // of an environment variable must not silently keep reading the stale inline
 // copy you are trying to delete.
-
+//
+// An unreadable _FILE is FATAL, recorded in fileErr and returned by LoadRaw. It
+// used to fall back to the plain variable, which for an authentication setting
+// is fail-open: TGW_DEBUG_TOKEN_FILE pointing at a bad path left the debug token
+// empty, and an empty debug token means "allow". A misconfigured secret must
+// stop the process, not quietly downgrade it.
 func setStr(dst *string, env string) {
 	if path, ok := os.LookupEnv(env + "_FILE"); ok && path != "" {
 		b, err := os.ReadFile(path)
 		if err != nil {
-			// Deliberately fall through to the plain variable instead of leaving
-			// the value empty: a typo'd path must not silently look like "this
-			// setting was never configured", which for a credential surfaces as
-			// a confusing auth failure somewhere far away.
-			slog.Error("cannot read setting file, falling back to the plain env var",
-				"env", env+"_FILE", "path", path, "err", err)
-		} else {
-			// Trailing newline only — `echo secret > file` adds one, and a
-			// password may legitimately end in a space.
-			*dst = strings.TrimRight(string(b), "\r\n")
-			slog.Info("loaded setting from file", "env", env, "path", path)
+			if fileErr == nil {
+				fileErr = fmt.Errorf("read %s=%q: %w", env+"_FILE", path, err)
+			}
 			return
 		}
+		// Trailing newline only — `echo secret > file` adds one, and a
+		// password may legitimately end in a space.
+		*dst = strings.TrimRight(string(b), "\r\n")
+		slog.Info("loaded setting from file", "env", env, "path", path)
+		return
 	}
 	if v, ok := os.LookupEnv(env); ok {
 		*dst = v
 	}
 }
+
+// fileErr holds the first _FILE read failure seen during applyEnv. Config is
+// loaded once, from one goroutine, before anything else starts.
+var fileErr error
 
 func setBool(dst *bool, env string) {
 	if v, ok := os.LookupEnv(env); ok {

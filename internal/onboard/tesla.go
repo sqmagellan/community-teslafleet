@@ -141,8 +141,12 @@ func (c *teslaClient) exchangeCode(code, redirectURI string) (string, error) {
 	return access.Refresh, nil
 }
 
-// refresh exchanges a refresh token for an access token (for enroll calls).
-func (c *teslaClient) refresh(refreshToken string) (string, error) {
+// refresh exchanges a refresh token for a new token pair (for enroll calls).
+//
+// Returns the WHOLE response: Tesla rotates the refresh token on every use, so
+// a caller that keeps only the access token silently strands the account on a
+// spent credential.
+func (c *teslaClient) refresh(refreshToken string) (tokenResponse, error) {
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
 		"client_id":     {c.clientID},
@@ -151,7 +155,7 @@ func (c *teslaClient) refresh(refreshToken string) (string, error) {
 	if c.clientSecret != "" {
 		form.Set("client_secret", c.clientSecret)
 	}
-	return c.postToken(form)
+	return c.postTokenFull(form)
 }
 
 type teslaVehicle struct {
