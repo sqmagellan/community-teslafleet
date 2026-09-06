@@ -248,15 +248,24 @@ func drivePower(snap store.Snapshot, d store.Derived) int {
 	return 0
 }
 
-// PackPowerKW is instantaneous DC pack power in kW, derived from voltage and
-// current. Reported only when both fields are present.
+// PackPowerKW is instantaneous pack power in kW, in the sign convention the
+// Fleet API uses for drive_state.power: POSITIVE while discharging (driving),
+// negative while the pack takes charge.
+//
+// The raw telemetry is the other way round. Measured 2026-09-06 on two parked,
+// awake cars with DetailedChargeState Disconnected/Complete and both charging
+// powers at 0 — a car in that state can only be discharging to run its own
+// electronics, and PackCurrent read -0.3 A and -0.8 A. So negative current is
+// discharge, and the product has to be negated to match TeslaMate.
+//
+// Reported only when both halves are present.
 func PackPowerKW(snap store.Snapshot) (float64, bool) {
 	v, vok := snap.Num(store.FieldPackVoltage)
 	a, aok := snap.Num(store.FieldPackCurrent)
 	if !vok || !aok {
 		return 0, false
 	}
-	return v * a / 1000, true
+	return -(v * a) / 1000, true
 }
 
 // DisplayedSOC is the battery percentage the Fleet API reports, rounded the way

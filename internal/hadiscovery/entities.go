@@ -307,11 +307,13 @@ func buildState(snap store.Snapshot, d store.Derived, units config.Units) map[st
 	// Drive/regen power, derived from battery pack: V × A → kW (no direct signal).
 	// PackCurrent decays to a small residual when idle (never a clean 0), so only
 	// report pack power while driving or charging; otherwise it is 0.
+	//
+	// Shared with the Fleet API mapping so HA and TeslaMate cannot disagree about
+	// the sign — the raw current is negative while discharging, which is the
+	// opposite of what both consumers expect.
 	if d.Driving || d.Charging {
-		if v, ok := snap.Num(store.FieldPackVoltage); ok {
-			if a, ok2 := snap.Num(store.FieldPackCurrent); ok2 {
-				s["power"] = roundP(v*a/1000, 1)
-			}
+		if kw, ok := vehicledata.PackPowerKW(snap); ok {
+			s["power"] = roundP(kw, 1)
 		}
 	} else {
 		s["power"] = 0
