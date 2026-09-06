@@ -82,58 +82,18 @@ gorun() {
 if [ "$DO_STATIC" = 1 ]; then
   stage "static analysis"
 
-  # Hold OUR changes to gofmt, but do not fail on drift we inherited.
+  # gofmt: delegate to .github/gofmt-drift.sh, which CI also runs. Two gates
+  # with two notions of "pass" is how a clean local run turns red on push --
+  # which is exactly what happened when CI held changed files to `gofmt -l`
+  # while this script asked only that a change add no NEW drift.
   #
-  # The upstream tree carries pre-existing formatting deviations (struct field
-  # alignment). Reformatting it wholesale would conflict with every future
-  # upstream merge, so the rule is not "changed files must be clean" -- that
-  # punishes you for touching an already-dirty file -- but "your change must not
-  # ADD deviation". Compare each changed file's normalized gofmt diff against the
-  # same file's diff at $UPSTREAM_REF; equal means you introduced none.
-  changed=$(cd "$REPO" && git diff --name-only "$UPSTREAM_REF" -- '*.go' 2>/dev/null)
-  if [ -z "$changed" ]; then
-    skip "gofmt (no .go changes vs $UPSTREAM_REF)"
+  # Run inside the Go image so it does not depend on a local gofmt.
+  if docker run --rm -v "$REPO:/src:ro" -w /src "$GO_IMAGE" \
+      bash -c "git config --global --add safe.directory /src && .github/gofmt-drift.sh $UPSTREAM_REF" \
+      >/tmp/gate-fmt.log 2>&1; then
+    ok "$(tail -1 /tmp/gate-fmt.log)"
   else
-    WORK=$(mktemp -d)
-    while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      mkdir -p "$WORK/new/$(dirname "$f")" "$WORK/old/$(dirname "$f")"
-      [ -f "$REPO/$f" ] && cp "$REPO/$f" "$WORK/new/$f"
-      (cd "$REPO" && git show "$UPSTREAM_REF:$f" 2>/dev/null) > "$WORK/old/$f"
-      # A file that does not exist upstream has no inherited drift to compare.
-      [ -s "$WORK/old/$f" ] || rm -f "$WORK/old/$f"
-    done <<< "$changed"
-
-    cat > "$WORK/fmtcheck.py" <<'PYEOF'
-import collections, re, sys
-
-drift = collections.defaultdict(list)
-side = None
-for line in sys.stdin.read().splitlines():
-    m = re.match(r"^diff (?:-u )?/w/(old|new)/(.+)\.orig\b", line)
-    if m:
-        side = (m.group(1), m.group(2))
-        continue
-    if side and re.match(r"^[+-]", line) and not re.match(r"^(\+\+\+|---)", line):
-        # Normalize away whitespace: we care WHICH lines gofmt rewrites, not how
-        # far they moved, and line numbers shift as code is added above them.
-        drift[side].append("".join(line.split()))
-
-for f in sorted({name for _, name in drift}):
-    if sorted(drift.get(("new", f), [])) != sorted(drift.get(("old", f), [])):
-        print(f)
-PYEOF
-
-    raw=$(docker run --rm -v "$WORK:/w:ro" "$GO_IMAGE" gofmt -d /w/old /w/new 2>/dev/null)
-    newdrift=$(printf '%s\n' "$raw" | python3 "$WORK/fmtcheck.py")
-    if [ -z "$newdrift" ]; then
-      inherited=$(printf '%s\n' "$raw" | grep -cE '^diff ' || true)
-      ok "gofmt: no new drift in changed files ($(printf '%s\n' "$changed" | grep -c . ) changed, $inherited pre-existing deviation(s) tolerated)"
-    else
-      bad "gofmt: your change ADDED formatting drift in: $(printf '%s' "$newdrift" | tr '\n' ' ')"
-      printf '        run: gofmt -w %s\n' "$(printf '%s' "$newdrift" | tr '\n' ' ')"
-    fi
-    rm -rf "$WORK"
+    bad "gofmt: this change added formatting drift"; tail -8 /tmp/gate-fmt.log
   fi
 
   if gorun "go vet ./..." >/tmp/gate-vet.log 2>&1; then
