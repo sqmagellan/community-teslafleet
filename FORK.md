@@ -33,7 +33,7 @@ That is not a criticism — it is a bus-factor fact we have to plan around.
 | Branch | Meaning |
 |---|---|
 | `upstream-main` | Pure mirror of `upstream/main`. Never edited directly. |
-| `ames-main` | The branch we deploy. `upstream-main` plus the merges below. |
+| `main` | The branch this fork deploys: `upstream-main` plus the merges below. |
 | `fix/<topic>` | One self-contained change, cut from `upstream-main`, so it can be sent upstream as a PR containing nothing else. |
 
 Current `fix/` branches, in the order they should go upstream:
@@ -54,22 +54,25 @@ Current `fix/` branches, in the order they should go upstream:
 | `fix/shutdown-ordering` | wait for the shutdown flush instead of racing exit |
 | `feat/vehicle-data-seed` | gated fetch of the real `vehicle_data` (needs `fix/debug-gate`) |
 | `fix/rediscover-on-reconnect` | generic discovery comes back with the curated kind |
-| `fix/zmq-socket-race` | Stop during reconnect was a data race |
 | `fix/dep-bump` | close three reachable advisories |
 | `fix/ci` | CI on push/PR + blocking linter (depends on `fix/error-handling`) |
+
+The 2026-09-06 batches below landed as focused commits on `main` rather than
+one `fix/` branch each, so cutting one for upstream is a cherry-pick of a
+single commit. That is bookkeeping still owed, not a change of policy.
 
 Taking upstream work:
 
 ```bash
 git fetch upstream
 git checkout upstream-main && git merge --ff-only upstream/main
-git checkout ames-main && git merge upstream-main
-hack/gate.sh --live        # never deploy an unverified merge
+git checkout main && git merge upstream-main
+# then run your own verification before deploying the merge
 ```
 
 ## Changes in this fork
 
-Each is a `fix/` branch merged into `ames-main`, and each is intended to go
+Each is a `fix/` branch merged into `main`, and each is intended to go
 upstream as its own PR.
 
 ### `fix/enum-none` — absent enum fields must render as `none`, not `''`
@@ -351,20 +354,6 @@ clearing it on reconnect without the lock would have introduced a race.
 Verified live by restarting the broker: all 196 retained configs came back, every
 one carrying `availability_topic`, with the availability topic back to `online`.
 
-### `fix/zmq-socket-race` — `Stop()` during a reconnect was a data race
-
-`reconnect()` replaces the SUB socket from the ingest goroutine while `Stop()`
-closes it from whichever goroutine is shutting the process down, so the pointer
-itself is shared state. Unguarded that is a data race, and in the worst case a
-double close or the close of a socket the loop is about to `Recv()` on.
-
-Found by CI on a loaded runner, never locally: on a quiet machine the reconnect
-almost always wins, which is the profile of a bug that appears in production
-during a restart and nowhere else. A mutex guards the field, the socket is read
-into a local before the blocking `Recv()`, and every close happens outside the
-lock — closing a zmq socket can block, and doing that under the mutex would let a
-wedged close stall `Stop()`.
-
 ### `fix/dep-bump` — close three reachable advisories
 
 `govulncheck` reported three vulnerabilities in code paths this project actually
@@ -384,8 +373,8 @@ discarded errors `fix/error-handling` fixed.
 `gofmt` is not part of the lint job. The tree carries pre-existing formatting
 drift in files nobody is touching; reformatting it wholesale would conflict with
 every future upstream merge, so formatting is held per change — CI checks only
-the files a commit touches, and `hack/gate.sh` asserts a change adds no *new*
-drift.
+the files a commit touches, and the deploy gate asserts that a change adds no
+*new* drift.
 
 This branch depends on `fix/error-handling`: the lint job only passes once the
 errors it enforces are actually fixed.
@@ -636,27 +625,28 @@ collision, and a POST to `https://127.0.0.1:4444` completing TLS and returning
 
 Both used `latest`, so they could silently drift onto different versions and
 "it passed locally" stopped being evidence. Pinned to v2.13.2 in
-`.github/workflows/ci.yml` and `hack/gate.sh`; bump them together.
+`.github/workflows/ci.yml` and the deploy gate; bump them together.
 
-## Local-only additions
+## Verification, which lives outside this repo
 
-`hack/gate.sh` is ours and is not proposed upstream, because it hard-codes
-assumptions about our deployment.
+The deploy gate used here is not in this repository and is not proposed upstream:
+it hard-codes assumptions about one specific deployment. Its reasoning is worth
+stating anyway, because it shaped most of the branches above.
 
-It exists because **none of this project's real production failures were test
-failures**. They were: a wedged ZMQ socket that kept publishing stale values, a
-`/healthz` that returns a hard-coded `ok` and stayed green throughout, and a
-container that built successfully while still serving the previous image. So the
-gate has a static half (fmt, vet, `test -race`, `govulncheck`, `golangci-lint`,
-image build) and a live half that proves the *deployed* process actually ingests
-and serves: vehicle count, `car_type` matched against VIN position 4, `/healthz`
-returning ready, `last_ingest_unix` present for every vehicle, no HA enum warning
-spam, and an opt-in regression test that restarts the telemetry container and
-asserts the gateway re-dials.
+**None of this project's real production failures were test failures.** They were a
+wedged ZMQ socket that kept publishing stale values, a `/healthz` that returned a
+hard-coded `ok` and stayed green throughout it, and a container that built
+successfully while still serving the previous image. So the gate has a static half
+(fmt, vet, `test -race`, `govulncheck`, `golangci-lint`, image build) and a live
+half that proves the *deployed* process actually ingests and serves: vehicle count,
+`car_type` matched against VIN position 4, `/healthz` returning ready,
+`last_ingest_unix` present for every vehicle, no Home Assistant enum warning spam,
+retained state and availability verified at the broker, and an opt-in regression
+test that restarts the telemetry container and asserts the gateway re-dials.
 
-A "missing" `/healthz` document is called out separately from a 503, because it
-means an old build is deployed — image built, container still serving the previous
-one, which is half of why this script exists.
+A *missing* `/healthz` document is worth distinguishing from a 503: it means an old
+build is deployed — image built, container still serving the previous one — which
+is half of why that gate exists.
 
 ## Attribution and licence
 
