@@ -46,11 +46,15 @@ services:
       - "127.0.0.1:4443:4443"                             # loopback only
 
   gateway:
-    image: ghcr.io/lasselegarth/community-teslafleet:latest    # or: build: .
+    # This fork's deployment file builds from source. The upstream ghcr image is
+    # a different codebase and does not carry the fixes in FORK.md.
+    build: .
+    image: community-teslafleet:local
     restart: unless-stopped
     depends_on: [fleet-telemetry]
     ports:
       - "4460:4460"                                        # Fleet API + WSS for TeslaMate (LAN-only)
+      - "127.0.0.1:8099:8099"                              # onboarding wizard, loopback only
     volumes:
       - ./data:/data                                       # config.yaml, token cache, ftc.json, recordings
     environment:
@@ -63,6 +67,8 @@ services:
       - TGW_UNITS_SYSTEM=${TGW_UNITS_SYSTEM:-metric}
       - TGW_FLEETAPI_ENABLED=${TGW_FLEETAPI_ENABLED:-true}
       - TGW_COMMANDS_ENABLED=${TGW_COMMANDS_ENABLED:-true}
+      - TGW_ONBOARD_ENABLED=${TGW_ONBOARD_ENABLED:-false}
+      - TGW_ONBOARD_PASSWORD=${TGW_ONBOARD_PASSWORD:-}
       - TGW_TESLA_PROXY_URL=https://vehicle-command-proxy:4443
       - TGW_TESLA_CLIENT_ID=${TGW_TESLA_CLIENT_ID:-}
       - TGW_TESLA_CLIENT_SECRET=${TGW_TESLA_CLIENT_SECRET:-}
