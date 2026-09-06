@@ -67,7 +67,15 @@ func (s *Server) Routes() chi.Router {
 	r.Get("/api/1/vehicles/{id}", s.handleVehicle)
 	r.Get("/api/1/vehicles/{id}/vehicle_data", s.handleVehicleData)
 	r.Post("/api/1/vehicles/{id}/wake_up", s.handleWake)
-	r.Post("/admin/enroll", s.handleEnroll)
+	// /admin/enroll makes a signed, billable Tesla call and rewrites the vehicle's
+	// telemetry configuration, so it does not belong on the auth-less TeslaMate
+	// router. Same gate and same token as /debug.
+	r.Post("/admin/enroll", func(w http.ResponseWriter, r *http.Request) {
+		if !s.debugAllowed(w, r) {
+			return
+		}
+		s.handleEnroll(w, r)
+	})
 	r.Get("/debug/state", s.handleDebug)
 	r.Get("/debug/upstream/{vin}", s.handleUpstreamVehicleData)
 	r.Get("/healthz", s.handleHealthz)
@@ -170,6 +178,7 @@ type Health struct {
 	LastIngestAgeS int64  `json:"last_ingest_age_s"`
 	VehiclesOnline int    `json:"vehicles_online"`
 	VehiclesKnown  int    `json:"vehicles_known"`
+	VehiclesStale  int    `json:"vehicles_stale"`
 	StaleAfterS    int    `json:"stale_after_s"`
 	Reason         string `json:"reason,omitempty"`
 }
@@ -203,14 +212,29 @@ func (s *Server) health() Health {
 		h.LastIngestUnix = last.Unix()
 		h.LastIngestAgeS = int64(now.Sub(last).Seconds())
 	}
+	stale := int64(s.cfg.State.StaleAfterSeconds)
+	// Freshness is per vehicle. LastIngest() is fleet-wide, so with two cars a
+	// second one still streaming keeps it fresh and hides the first one's stall —
+	// which is the exact failure this probe exists to catch.
+	var staleVIN string
 	for _, v := range s.effectiveVehicles() {
 		h.VehiclesKnown++
-		if snap, _ := s.store.Snapshot(v.VIN); snap.Connectivity == "online" {
-			h.VehiclesOnline++
+		snap, _ := s.store.Snapshot(v.VIN)
+		if snap.Connectivity != "online" {
+			continue
+		}
+		h.VehiclesOnline++
+		if stale <= 0 {
+			continue
+		}
+		if snap.LastV.IsZero() || int64(now.Sub(snap.LastV).Seconds()) > stale {
+			h.VehiclesStale++
+			if staleVIN == "" {
+				staleVIN = v.VIN
+			}
 		}
 	}
 
-	stale := int64(s.cfg.State.StaleAfterSeconds)
 	switch {
 	case h.IngestConnected != nil && !*h.IngestConnected:
 		h.Status = "degraded"
@@ -219,13 +243,10 @@ func (s *Server) health() Health {
 		// Nothing is expected to be streaming.
 	case stale <= 0:
 		// Freshness threshold disabled by config; the link check is all we have.
-	case h.LastIngestAgeS < 0:
+	case h.VehiclesStale > 0:
 		h.Status = "degraded"
-		h.Reason = fmt.Sprintf("%d vehicle(s) online but no telemetry has ever been received", h.VehiclesOnline)
-	case h.LastIngestAgeS > stale:
-		h.Status = "degraded"
-		h.Reason = fmt.Sprintf("%d vehicle(s) online but no telemetry for %ds (stale after %ds)",
-			h.VehiclesOnline, h.LastIngestAgeS, stale)
+		h.Reason = fmt.Sprintf("%d of %d online vehicle(s) have no telemetry within %ds (first: %s)",
+			h.VehiclesStale, h.VehiclesOnline, stale, staleVIN)
 	}
 	return h
 }
