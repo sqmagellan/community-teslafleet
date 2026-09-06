@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -543,6 +544,50 @@ func (r *Relay) VehicleData(vin string) (map[string]any, error) {
 	return out.Response, nil
 }
 
+// TelemetryConfig returns the vehicle's ACTIVE fleet_telemetry_config as Tesla
+// holds it, including the `synced` flag.
+//
+// Two reasons this is worth having. Tesla's own setup guide (fleet-telemetry
+// README, step 12) says to poll it until `synced` is true, because an accepted
+// POST only means the config was queued. And it is the ONLY backup of the
+// config a car is running: nothing on this side records what was last pushed,
+// so without reading it first, a bad enroll is unrecoverable — a wrong `ca`
+// stops the car validating the telemetry server and there is nothing to restore.
+//
+// A GET is free; it is not a vehicle_data request and does not wake the car.
+func (r *Relay) TelemetryConfig(vin string) (map[string]any, error) {
+	if r.fleetAPI == "" {
+		return nil, fmt.Errorf("fleet_api_url not set")
+	}
+	if len(r.knownVINs) > 0 && !r.knownVINs[vin] {
+		return nil, fmt.Errorf("unknown VIN")
+	}
+	tok, err := r.tm.token()
+	if err != nil {
+		return nil, fmt.Errorf("token: %w", err)
+	}
+	urlStr := fmt.Sprintf("%s/api/1/vehicles/%s/fleet_telemetry_config", r.fleetAPI, url.PathEscape(vin))
+	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := r.apiClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(rb)))
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rb, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (r *Relay) getVehicle(vin string) (vehicleSummary, error) {
 	var vs vehicleSummary
 	if r.fleetAPI == "" {
@@ -736,12 +781,16 @@ func (r *Relay) wakeAndWait(vin string) error {
 // is the raw fleet_telemetry_config JSON. A non-2xx response (including its body)
 // is returned as an error.
 func (r *Relay) Enroll(payload []byte) error {
+	body, err := enrollBody(payload, r.vinList())
+	if err != nil {
+		return err
+	}
 	tok, err := r.tm.token()
 	if err != nil {
 		return fmt.Errorf("token: %w", err)
 	}
 	urlStr := fmt.Sprintf("%s/api/1/vehicles/fleet_telemetry_config", r.proxy)
-	req, err := http.NewRequest(http.MethodPost, urlStr, bytes.NewReader(payload))
+	req, err := http.NewRequest(http.MethodPost, urlStr, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -757,6 +806,50 @@ func (r *Relay) Enroll(payload []byte) error {
 		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(rb)))
 	}
 	return nil
+}
+
+// vinList returns the configured VINs in a stable order.
+func (r *Relay) vinList() []string {
+	out := make([]string, 0, len(r.knownVINs))
+	for vin := range r.knownVINs {
+		out = append(out, vin)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// enrollBody wraps a bare fleet_telemetry_config in the envelope Tesla's
+// vehicle-command proxy actually expects:
+//
+//	{"vins": ["..."], "config": {...}}
+//
+// Posting the bare config is not merely rejected — the proxy unmarshals into
+// `struct{ VINs []string; Config jwt.MapClaims }`, gets a nil Config, and hands
+// that nil map to SignMessage, which assigns into it and PANICS
+// (pkg/proxy/proxy.go handleFleetTelemetryConfig -> internal/authentication/jwt.go).
+// The connection dies mid-response, so the only symptom on this side is an
+// unexplained `EOF` with nothing in any log but the proxy's stack trace.
+//
+// An already-wrapped payload is passed through, so a config captured from the
+// Tesla docs works unchanged.
+func enrollBody(payload []byte, vins []string) ([]byte, error) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &probe); err != nil {
+		return nil, fmt.Errorf("parse fleet_telemetry_config: %w", err)
+	}
+	if _, wrapped := probe["config"]; wrapped {
+		return payload, nil
+	}
+	if len(probe["fields"]) == 0 {
+		return nil, fmt.Errorf("fleet_telemetry_config has no fields")
+	}
+	if len(vins) == 0 {
+		return nil, fmt.Errorf("enroll needs an explicit VIN list: set vehicles/TGW_VINS")
+	}
+	return json.Marshal(map[string]any{
+		"vins":   vins,
+		"config": json.RawMessage(payload),
+	})
 }
 
 func (r *Relay) post(urlStr string, body map[string]any) error {
