@@ -33,6 +33,22 @@ type Options struct {
 	ProxyURL   string // vehicle-command proxy (for enroll)
 	EnrollFile string // ftc.json path to POST on enroll
 	TokenCache string // where to persist the obtained refresh token (relay reads this)
+
+	// Tokens, when non-nil, is the single owner of the OAuth credential -- the
+	// command relay. Tesla rotates the refresh token on every use, so the wizard
+	// must not run its own refresh alongside it: whichever call loses the race
+	// spends a token the other still holds and the account is stranded. The
+	// wizard falls back to refreshing for itself only when commands are off and
+	// there is no relay to defer to.
+	Tokens TokenOwner
+}
+
+// TokenOwner is the narrow slice of the command relay the wizard needs. Keeping
+// it an interface here means onboard does not import commands, which would be a
+// cycle.
+type TokenOwner interface {
+	AccessToken() (string, error)
+	SetRefreshToken(string) error
 }
 
 // State is the persisted onboarding progress (no secrets in here; the private key and
@@ -318,17 +334,19 @@ func (s *Server) pasteToken(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "✗ Paste a refresh token.")
 		return
 	}
-	if s.opts.TokenCache != "" {
-		if err := atomicWrite(s.opts.TokenCache, []byte(tok), 0o600); err != nil {
-			s.render(w, r, "✗ Could not write token cache: "+err.Error())
-			return
-		}
+	if err := s.saveRefreshToken(tok); err != nil {
+		s.render(w, r, "✗ Could not save the refresh token: "+err.Error())
+		return
 	}
 	s.store.mu.Lock()
 	s.store.st.TokenSet = true
 	_ = s.store.saveState()
 	s.store.mu.Unlock()
-	s.render(w, r, "✓ Refresh token saved. Restart the gateway to use it for commands.")
+	msg := "✓ Refresh token saved. Restart the gateway to use it for commands."
+	if s.opts.Tokens != nil {
+		msg = "✓ Refresh token saved and in use. No restart needed."
+	}
+	s.render(w, r, msg)
 }
 
 func (s *Server) listVehicles(w http.ResponseWriter, r *http.Request) {
@@ -399,14 +417,21 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "✓ Telemetry config sent. The car adopts it within a minute (poll synced).")
 }
 
-// accessToken mints an access token from the cached refresh token, persisting
-// the replacement Tesla hands back.
+// accessToken mints an access token from the saved refresh token.
 //
-// Tesla ROTATES the refresh token on every use: the old one is dead the moment
-// this call succeeds. Discarding the replacement left the cache holding a spent
-// credential, so the next enroll — or the next restart — failed to authenticate
-// for no visible reason.
+// When the command relay is running it owns the credential and this delegates
+// to it. Tesla rotates the refresh token on every use, so two independent
+// refreshers is not a race that can be tuned away: whichever loses spends a
+// token the other still holds.
+//
+// Standalone (commands disabled, no relay) the wizard refreshes for itself, and
+// must persist the replacement Tesla hands back -- discarding it left the cache
+// holding a spent credential, so the next enroll or restart failed to
+// authenticate with nothing pointing at the cause.
 func (s *Server) accessToken() (string, error) {
+	if s.opts.Tokens != nil {
+		return s.opts.Tokens.AccessToken()
+	}
 	s.tokenMu.Lock()
 	defer s.tokenMu.Unlock()
 	rt := s.readTokenCache()
@@ -427,6 +452,20 @@ func (s *Server) accessToken() (string, error) {
 		}
 	}
 	return t.Access, nil
+}
+
+// saveRefreshToken adopts an operator-pasted token through the owner, so the
+// relay picks it up immediately instead of serving the one it read at startup.
+func (s *Server) saveRefreshToken(tok string) error {
+	if s.opts.Tokens != nil {
+		return s.opts.Tokens.SetRefreshToken(tok)
+	}
+	s.tokenMu.Lock()
+	defer s.tokenMu.Unlock()
+	if s.opts.TokenCache == "" {
+		return nil
+	}
+	return atomicWrite(s.opts.TokenCache, []byte(tok), 0o600)
 }
 
 func (s *Server) readTokenCache() string {
