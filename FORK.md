@@ -410,10 +410,14 @@ the Fleet API's sign convention: charging negative, discharging positive. It is
 gated on `Derived.Driving` because `PackCurrent` decays to a residual rather
 than a clean zero when parked.
 
-**This is inert until `PackVoltage` and `PackCurrent` are enrolled.** Both are
-in `internal/enroll/fields.txt`, but the two production cars were enrolled
-before that and stream neither — re-enrol to switch it on, then confirm the sign
-against a real drive before trusting the history.
+The sign was settled by measurement on 2026-09-06, not by assumption, and it
+is the opposite of the obvious reading: **raw `PackCurrent` is negative while
+discharging**. Two parked, awake cars reporting `DetailedChargeState`
+Disconnected and Complete with both charging powers at 0 read -0.3 A and -0.8 A,
+and a car in that state can only be discharging to run its own electronics. The
+product is therefore negated to reach the Fleet API convention of positive =
+discharging. `internal/hadiscovery` shares the same helper, so Home Assistant
+and TeslaMate cannot disagree about it.
 
 Separately, the WebSocket read `Soc` and truncated it while HTTP reported a
 rounded `BatteryLevel`: for the measured pair 59.221 / 59.553 TeslaMate got 59
@@ -620,43 +624,6 @@ Verified by running the add-on image directly, no Home Assistant needed: two
 supervised processes instead of one, 4443/4444/4460 all listening with no
 collision, and a POST to `https://127.0.0.1:4444` completing TLS and returning
 403. Only the signing path beyond that needs real credentials.
-
-### `fix/enroll-envelope` — /admin/enroll panicked Tesla's own proxy
-
-`Relay.Enroll` POSTed the bare `fleet_telemetry_config` document. Tesla's
-vehicle-command proxy unmarshals that body into
-`struct{ VINs []string; Config jwt.MapClaims }` and expects the envelope
-`{"vins": [...], "config": {...}}`, so `Config` came back nil — and the proxy
-hands that nil map straight to `SignMessage`, which assigns into it and
-**panics** (`pkg/proxy/proxy.go` `handleFleetTelemetryConfig` ->
-`internal/authentication/jwt.go:45`). The connection dies mid-response, so the
-only symptom on this side is an unexplained `EOF`, with the stack trace visible
-nowhere but the proxy's own log.
-
-This endpoint had therefore never worked. `Enroll` now wraps a bare config with
-the configured VINs, sorted so an unchanged config signs identically twice, and
-passes an already-wrapped payload through untouched.
-
-A second thing the same attempt found: Tesla **requires** `ca`, "the full
-certificate chain used to generate the server's TLS certificate"
-(fleet-telemetry README, step 8). The generator's comment claimed a
-publicly-trusted certificate meant it could be omitted; omitting it earns
-`400 ca is not a valid PEM`. For a Let's Encrypt endpoint the working value is
-the whole `fullchain.pem`, leaf included — confirmed by reading back what the
-vehicles were already running.
-
-### `feat/telemetry-config-read` — read the config a car is actually running
-
-`GET /debug/telemetry-config/{vin}`, behind the same gate as `/debug/state`.
-
-Tesla's setup guide (step 12) says to poll this until `synced` is true, because
-an accepted POST only means the config was queued. It is also the only backup
-that exists: nothing on this side recorded what was last pushed, so before this
-endpoint a bad enroll was unrecoverable — a wrong `ca` stops the car validating
-the telemetry server, and there was nothing to restore from. Build the next
-config by reading this one and editing it, not by regenerating from a profile.
-
-The GET is free and does not wake the car.
 
 ### `fix/go-1.25.13` — six reachable stdlib advisories, and the gate that hid them
 

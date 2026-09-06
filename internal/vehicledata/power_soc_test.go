@@ -54,36 +54,66 @@ func TestDisplayedSOC_MatchesFleetAPIRounding(t *testing.T) {
 	}
 }
 
-// Pack power is only reported when both halves are present. PackVoltage and
-// PackCurrent have to be enrolled in the telemetry field set; without them the
-// mapping must stay silent rather than publish a confident zero.
+// Pack power is only reported when both halves are present, and it is returned
+// in the Fleet API's sign convention: positive while discharging. The raw
+// telemetry is inverted — see PackPowerKW for the measurement that settled it.
 func TestPackPowerKW(t *testing.T) {
 	t.Run("absent fields report nothing", func(t *testing.T) {
 		if _, ok := PackPowerKW(store.Snapshot{Fields: map[string]store.FieldValue{}}); ok {
 			t.Error("reported power with no pack telemetry")
 		}
 	})
-	t.Run("volts times amps", func(t *testing.T) {
+	t.Run("discharging is positive", func(t *testing.T) {
+		// Negative current = discharge, so 400 V at -25 A is 10 kW going out.
+		snap := store.Snapshot{Fields: map[string]store.FieldValue{
+			store.FieldPackVoltage: {Value: 400.0},
+			store.FieldPackCurrent: {Value: -25.0},
+		}}
+		kw, ok := PackPowerKW(snap)
+		if !ok || kw != 10 {
+			t.Errorf("PackPowerKW = %v (%v), want +10", kw, ok)
+		}
+	})
+	t.Run("charging is negative", func(t *testing.T) {
 		snap := store.Snapshot{Fields: map[string]store.FieldValue{
 			store.FieldPackVoltage: {Value: 400.0},
 			store.FieldPackCurrent: {Value: 25.0},
 		}}
 		kw, ok := PackPowerKW(snap)
-		if !ok || kw != 10 {
-			t.Errorf("PackPowerKW = %v (%v), want 10", kw, ok)
+		if !ok || kw != -10 {
+			t.Errorf("PackPowerKW = %v (%v), want -10", kw, ok)
+		}
+	})
+	t.Run("a parked awake car reads as a small draw", func(t *testing.T) {
+		// Measured on a live car, parked and awake, nothing charging.
+		snap := store.Snapshot{Fields: map[string]store.FieldValue{
+			store.FieldPackVoltage: {Value: 382.5999914482236},
+			store.FieldPackCurrent: {Value: -0.800000011920929},
+		}}
+		kw, _ := PackPowerKW(snap)
+		if kw <= 0 {
+			t.Errorf("PackPowerKW = %v, want a positive draw for a car running its own electronics", kw)
 		}
 	})
 }
 
-// power is negative while charging and positive while driving, matching the
-// Fleet API sign convention TeslaMate stores.
+// power is positive while driving and negative while charging, matching the
+// Fleet API convention TeslaMate stores.
 func TestDrivePower_SignConvention(t *testing.T) {
 	driving := store.Snapshot{Fields: map[string]store.FieldValue{
 		store.FieldPackVoltage: {Value: 400.0},
-		store.FieldPackCurrent: {Value: 25.0},
+		store.FieldPackCurrent: {Value: -25.0}, // discharging
 	}}
 	if got := drivePower(driving, store.Derived{Driving: true}); got != 10 {
-		t.Errorf("driving power = %d, want 10", got)
+		t.Errorf("driving power = %d, want +10", got)
+	}
+	// Regen: current flows into the pack mid-drive, so power goes negative.
+	regen := store.Snapshot{Fields: map[string]store.FieldValue{
+		store.FieldPackVoltage: {Value: 400.0},
+		store.FieldPackCurrent: {Value: 25.0},
+	}}
+	if got := drivePower(regen, store.Derived{Driving: true}); got != -10 {
+		t.Errorf("regen power = %d, want -10", got)
 	}
 	// Parked with the same residual telemetry must stay at 0: PackCurrent never
 	// reaches a clean zero, so an unguarded mapping trickles forever.
