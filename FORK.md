@@ -545,6 +545,99 @@ this repo's README deployed a different codebase without any of the above. It
 now builds from source, and maps the onboarding port on loopback with the
 variables the wizard needs.
 
+## Follow-up batch, 2026-09-06
+
+The five items the review batch left open.
+
+### `fix/payload-allowlists` — every actuator parses its payload
+
+The lock bug was "anything that isn't LOCK means unlock". The same shape sat
+under the switches, the covers and the selects, where an unparseable payload
+resolved to the zero value and looked like a deliberate command: `climate_mode`
+started the climate for any payload but `off`; `charging`, `sentry`,
+`guest_mode`, `valet`, `speed_limit` and `pin_to_drive` read every unknown
+string as OFF, which for the last three means silently disarming the car; a
+`climate_keeper` typo selected mode 0 (off) and a seat-heater typo selected
+level 0.
+
+`onOff`, `coverOpen` and `lookupOption` now all report whether they recognised
+the payload, and `Handle` drops what they do not. `isOn` is gone — it treated
+`LOCK` and `PRESS` as ON, which is how a button payload could operate a switch.
+`STOP` is deliberately not accepted for the covers: they are actuators with no
+midpoint, and reading STOP as CLOSE would close a trunk somebody asked to halt.
+
+### `fix/one-token-owner` — the relay owns the OAuth credential
+
+Tesla rotates the refresh token on every use, so two components refreshing the
+same one is not a race that can be tuned away: whichever call loses spends a
+token the other still holds, and the account is stranded until someone pastes a
+new one.
+
+The relay's `tokenManager` was already the better implementation — mutex, cache,
+persist-on-rotation — so it became the owner rather than being duplicated.
+`Relay.AccessToken()` and `Relay.SetRefreshToken()` are the whole surface, passed
+to the wizard as `onboard.TokenOwner` so `onboard` does not import `commands`.
+With no relay (commands disabled) the wizard still refreshes for itself, and now
+persists the replacement.
+
+A side effect worth having: a token pasted into the wizard takes effect on the
+next command instead of at the next restart, because it goes through the same
+owner rather than being written to a file the relay had already read.
+
+### `fix/observation-timestamps` — stop stamping frozen data with the current time
+
+TeslaMate stores a streamed position's date verbatim (`create_position/2` in
+`vehicles/vehicle.ex`) and, while driving, inserts a row for **every** frame
+carrying gear D/N/R. The gateway sent a frame per second stamped `now`, so a
+stalled feed wrote one position per second at the last known coordinates, each
+claiming to be a fresh fix — a fake parked tail on the end of a drive. The HTTP
+document had the same problem on all four section timestamps.
+
+Both paths now use the observation time (`Snapshot.LastV`), falling back to the
+clock only when nothing has ever been streamed. They had to move together:
+`stale?` compares `drive_state.timestamp` from the HTTP path against the stream
+frame's time, so changing one alone would have made TeslaMate discard every
+frame from the other.
+
+**Frames are NOT suppressed when the observation has not advanced**, which is
+what the review recommended. TeslaMate's stream client arms a 30-second
+inactivity timer, resets it on any received frame, and on expiry reports
+`:inactive` and **closes the socket**, reconnecting with 10–30s backoff
+(`tesla_api/stream.ex`, `handle_info(:timeout, ...)`). Going quiet would have
+traded duplicate rows for permanent reconnect churn — the failure the
+stream watchdog exists to paper over. Repeats are safe on both guards: a fetch
+is discarded only when strictly older, stream data only when the stored
+timestamp is strictly greater.
+
+Deploying this needs a `teslamate` restart. Its `last_response` is in memory and
+still holds a wall-clock timestamp from the old build; the first fetch carrying
+an observation time would read as older and be discarded, and that branch
+immediately refetches.
+
+### `feat/embedded-command-proxy` — the add-on runs the proxy it ships
+
+Embedded mode supervised `fleet-telemetry` only. `Stream.ProxyBin` was
+configured and the binary was copied into the image, but nothing started it, so
+the default `proxy_url` named a Compose service that does not resolve there and
+every command failed at send time.
+
+The gateway now supervises `tesla-http-proxy` on loopback when commands are
+enabled, generates it a self-signed cert of its own (it does not borrow the
+telemetry key, which may be a real one), and rewrites `proxy_url` to match.
+`stream.proxy_port` defaults to 4444 and validation rejects a collision with
+`telemetry_port`.
+
+Verified by running the add-on image directly, no Home Assistant needed: two
+supervised processes instead of one, 4443/4444/4460 all listening with no
+collision, and a POST to `https://127.0.0.1:4444` completing TLS and returning
+403. Only the signing path beyond that needs real credentials.
+
+### `fix/pin-linter` — CI and the gate run the same linter
+
+Both used `latest`, so they could silently drift onto different versions and
+"it passed locally" stopped being evidence. Pinned to v2.13.2 in
+`.github/workflows/ci.yml` and `hack/gate.sh`; bump them together.
+
 ## Local-only additions
 
 `hack/gate.sh` is ours and is not proposed upstream, because it hard-codes
