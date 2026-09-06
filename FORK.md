@@ -410,14 +410,10 @@ the Fleet API's sign convention: charging negative, discharging positive. It is
 gated on `Derived.Driving` because `PackCurrent` decays to a residual rather
 than a clean zero when parked.
 
-The sign was settled by measurement on 2026-09-06, not by assumption, and it
-is the opposite of the obvious reading: **raw `PackCurrent` is negative while
-discharging**. Two parked, awake cars reporting `DetailedChargeState`
-Disconnected and Complete with both charging powers at 0 read -0.3 A and -0.8 A,
-and a car in that state can only be discharging to run its own electronics. The
-product is therefore negated to reach the Fleet API convention of positive =
-discharging. `internal/hadiscovery` shares the same helper, so Home Assistant
-and TeslaMate cannot disagree about it.
+**This is inert until `PackVoltage` and `PackCurrent` are enrolled.** Both are
+in `internal/enroll/fields.txt`, but the two production cars were enrolled
+before that and stream neither — re-enrol to switch it on, then confirm the sign
+against a real drive before trusting the history.
 
 Separately, the WebSocket read `Soc` and truncated it while HTTP reported a
 rounded `BatteryLevel`: for the measured pair 59.221 / 59.553 TeslaMate got 59
@@ -624,6 +620,20 @@ Verified by running the add-on image directly, no Home Assistant needed: two
 supervised processes instead of one, 4443/4444/4460 all listening with no
 collision, and a POST to `https://127.0.0.1:4444` completing TLS and returning
 403. Only the signing path beyond that needs real credentials.
+
+### `fix/one-gofmt-rule` — CI and the gate disagreed about what "clean" means
+
+CI ran `gofmt -l` over the changed files, so touching any of the six files
+carrying drift inherited from upstream turned a push red. The deploy gate asked
+the weaker and correct question — did this change ADD drift — so a change could
+pass everything locally and fail on push for a reason it did not cause. The `ci`
+section above describes the gate's rule as the policy; CI was quietly enforcing
+a different one.
+
+Both now run `.github/gofmt-drift.sh`, one definition in one file. It lives
+under `.github/` rather than alongside the gate so the published branch carries
+it and CI can call it directly. Verified in both directions: it passes on the
+current tree and fails, naming the file, when drift is deliberately introduced.
 
 ### `fix/go-1.25.13` — six reachable stdlib advisories, and the gate that hid them
 
