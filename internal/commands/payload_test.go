@@ -93,8 +93,8 @@ func TestHandle_RejectsUnrecognizedPayloads(t *testing.T) {
 
 func TestOnOff(t *testing.T) {
 	for _, tc := range []struct {
-		in      string
-		on, ok  bool
+		in     string
+		on, ok bool
 	}{
 		{"ON", true, true}, {"on", true, true}, {" TRUE ", true, true}, {"1", true, true},
 		{"OFF", false, true}, {"false", false, true}, {"0", false, true},
