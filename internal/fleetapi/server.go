@@ -78,6 +78,7 @@ func (s *Server) Routes() chi.Router {
 	})
 	r.Get("/debug/state", s.handleDebug)
 	r.Get("/debug/upstream/{vin}", s.handleUpstreamVehicleData)
+	r.Get("/debug/telemetry-config/{vin}", s.handleTelemetryConfig)
 	r.Get("/healthz", s.handleHealthz)
 	return r
 }
@@ -279,6 +280,42 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 //
 // The VIN must be one the gateway already knows: accepting an arbitrary VIN would
 // turn a debug endpoint into a way to spend money against someone else's car.
+// handleTelemetryConfig returns the vehicle's ACTIVE fleet_telemetry_config as
+// Tesla holds it. Read this before /admin/enroll: it is the only record of what
+// a car is currently running, and it carries the `synced` flag that says whether
+// the last push has actually been adopted.
+func (s *Server) handleTelemetryConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.debugAllowed(w, r) {
+		return
+	}
+	if s.relay == nil {
+		http.Error(w, "command relay is disabled", http.StatusServiceUnavailable)
+		return
+	}
+	vin := chi.URLParam(r, "vin")
+	known := false
+	for _, v := range s.effectiveVehicles() {
+		if v.VIN == vin {
+			known = true
+			break
+		}
+	}
+	if !known {
+		s.writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	cfg, err := s.relay.TelemetryConfig(vin)
+	if err != nil {
+		s.log.Error("telemetry config read failed", "vin", vin, "err", err)
+		s.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(cfg); err != nil {
+		s.log.Warn("telemetry config encode failed", "err", err)
+	}
+}
+
 func (s *Server) handleUpstreamVehicleData(w http.ResponseWriter, r *http.Request) {
 	if !s.debugAllowed(w, r) {
 		return
