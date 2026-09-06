@@ -390,6 +390,161 @@ drift.
 This branch depends on `fix/error-handling`: the lint job only passes once the
 errors it enforces are actually fixed.
 
+## Review batch, 2026-09-06
+
+Two model reviews of the whole tree (GPT-5.6 and GPT-6, run independently) found
+the twelve defects below. Each was reproduced against the source before being
+fixed, and each carries a regression test.
+
+These landed as focused commits on `ames-main` rather than as separate `fix/`
+branches, so cutting one for upstream is a cherry-pick of a single commit. That
+is bookkeeping still owed, not a change of policy.
+
+### `fix/auto-discovery-paths` — a discovered car crashed the API and could not stream
+
+Zero-config mode advertises every VIN the stream carries. Two paths never got
+the memo. `vehicledata.Build` took the per-VIN template straight from a map
+keyed on CONFIGURED vehicles, so an auto-discovered VIN passed a nil `*Template`
+and the first `vehicle_data` request panicked the handler. The streaming server
+built its tag lookup once from `cfg.Vehicles`, so a subscription for the same
+car answered `unknown vehicle` and TeslaMate never got drive detection.
+
+`Clone()` now treats a nil receiver as the default skeleton, and WSS falls back
+to `store.VINs()` the way the Fleet API already did.
+
+### `fix/power-and-soc` — `power` was always 0, and the two paths disagreed on SOC
+
+`drivePower` handled charging and returned 0 for everything else, so every
+driving sample TeslaMate stored reported no traction or regenerative power at
+all. It now reports pack power (`PackVoltage × PackCurrent`) while driving, with
+the Fleet API's sign convention: charging negative, discharging positive. It is
+gated on `Derived.Driving` because `PackCurrent` decays to a residual rather
+than a clean zero when parked.
+
+**This is inert until `PackVoltage` and `PackCurrent` are enrolled.** Both are
+in `internal/enroll/fields.txt`, but the two production cars were enrolled
+before that and stream neither — re-enrol to switch it on, then confirm the sign
+against a real drive before trusting the history.
+
+Separately, the WebSocket read `Soc` and truncated it while HTTP reported a
+rounded `BatteryLevel`: for the measured pair 59.221 / 59.553 TeslaMate got 59
+over the socket and 60 over HTTP for the same instant. Both now call
+`vehicledata.DisplayedSOC`.
+
+### `fix/charging-state` — residual DC power read as charging
+
+`isCharging` returned true for any positive AC **or** DC power before it looked
+at `DetailedChargeState`. A disconnected car reporting 0.099 kW of DC residual
+therefore counted as charging, which also forces state `online`. `store.go`
+already had `dcPowerFloor` for exactly this value; the central derivation was
+not using it.
+
+Explicit state now wins — `Charging` true, `Disconnected`/`Complete`/`NoPower`/
+`Stopped` false — and DC power is only believed above the floor.
+
+### `fix/ha-lock-inversion` — a locked car showed as unlocked
+
+For `device_class: lock`, on means unlocked, so the `locked` entity ships
+`payload_on: "false"`. The generated `value_template` also rendered `payload_on`
+when the telemetry was true, applying the inversion twice: `Locked=true` became
+`"false"`, which HA read as on, which means unlocked. The template now renders
+the underlying boolean and lets `payload_on`/`payload_off` carry the inversion
+alone.
+
+The old test asserted the generated template string, so it protected the bug.
+It now asserts the semantics: telemetry true → the payload HA reads as locked.
+
+### `fix/command-payloads` — a malformed lock command unlocked the car
+
+The handler read "not LOCK" as unlock. `mosquitto_pub -m LOCK` sends a trailing
+newline, so the obvious way to lock a car by hand unlocked it. An empty retained
+payload did the same. Now an explicit allow-list: `LOCK`, `UNLOCK`, and anything
+else is logged and dropped.
+
+### `fix/secret-files-fatal` — an unreadable `_FILE` was fail-open
+
+`setStr` logged the read failure and fell back to the plain variable, which for
+an authentication setting means fail-open: `TGW_DEBUG_TOKEN_FILE` pointing at a
+bad path left the token empty, and an empty debug token means allow. An
+explicitly configured `_FILE` that cannot be read is now fatal to config load,
+which is what the deployment note below already claimed.
+
+### `fix/endpoint-auth` — three endpoints trusted the network
+
+`POST /admin/enroll` sat on the auth-less TeslaMate router while making a
+signed, billable Tesla call and rewriting the car's telemetry config. It now
+carries the same gate and token as `/debug`.
+
+The onboarding wizard returned its handler unwrapped when no password was set,
+so anything that could reach `:8099` could replace the signing keypair or the
+stored refresh token. Passwordless now means loopback only; the HA Supervisor's
+ingress proxy reaches us over loopback, so add-on ingress is unaffected.
+
+The streaming WebSocket accepted every `Origin`. TeslaMate is a server-side
+client and sends none, so absent is still allowed, but a browser Origin must now
+match the Host.
+
+### `fix/token-rotation` — the rotated refresh token was thrown away
+
+Tesla rotates the refresh token on every use: the old one is dead the moment the
+call succeeds. The wizard's `refresh` returned only the access token, so the
+cache kept a spent credential and the next enroll — or the next restart — failed
+to authenticate for no visible reason. `refresh` now returns the whole response
+and `Server.accessToken` persists the replacement under a mutex.
+
+Still open: the relay's token manager and the wizard are two independent owners
+of one rotating credential. Routing both through a single token provider is the
+real fix and is not in this batch.
+
+### `fix/mqtt-nonblocking` — a down broker held the whole gateway in startup
+
+`Publisher.Start` waited on `Connect()` with no deadline, and `SetConnectRetry`
+makes that block until the broker returns. Start runs before the TeslaMate HTTP
+and WebSocket servers are created, so an unreachable HA broker took TeslaMate
+down with an optional dependency. The initial wait is now bounded at 10s; Paho
+keeps retrying in the background and publishes discovery when it connects.
+
+### `fix/restart-state` — three lifecycle defects
+
+Loading a snapshot restored `Connectivity: "online"`, which `Derive` trusts
+unconditionally. A car that fell asleep during the downtime was therefore pinned
+online forever, because a sleeping car sends nothing that could clear it.
+`offline` is still restored; `online` no longer is.
+
+The state snapshotter shared the signal context with everything else, so SIGTERM
+triggered the final `Save` while the consumer was still applying its last
+message. Persistence now runs on its own context, cancelled after ingest stops.
+
+`Consumer.Stop()` cancelled and closed but did not join, and a dial already in
+flight would install its socket afterwards and set `connected = true`. `Stop()`
+now joins the consuming goroutine (bounded at 3s) and `setSocket` refuses once
+the context is done.
+
+### `fix/healthz-per-vehicle` — a per-car stall stayed green
+
+`/healthz` compared every online vehicle against `LastIngest()`, which is
+fleet-wide. With two cars, the one still streaming kept it fresh and the other
+one's stall never surfaced. Freshness is now evaluated per vehicle, and the
+response carries `vehicles_stale`.
+
+### `fix/embedded-commands-guard` — the add-on advertised a proxy it never starts
+
+Embedded mode supervises `fleet-telemetry` only, despite `Stream.ProxyBin` being
+configured and the binary being copied into the image. The default
+`commands.proxy_url` names a Compose service that does not resolve inside the
+add-on, so every command failed at send time with nothing pointing at the cause.
+
+Config validation now refuses that combination outright. **Actually supervising
+the proxy is the right fix and is not done** — it cannot be verified anywhere but
+a real add-on install.
+
+### `docker-compose.yml` — the fork's own deployment file pulled upstream's image
+
+It defaulted to `ghcr.io/lasselegarth/community-teslafleet:latest`, so following
+this repo's README deployed a different codebase without any of the above. It
+now builds from source, and maps the onboarding port on loopback with the
+variables the wizard needs.
+
 ## Local-only additions
 
 `hack/gate.sh` is ours and is not proposed upstream, because it hard-codes
