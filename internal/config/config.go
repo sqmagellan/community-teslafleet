@@ -69,6 +69,10 @@ type Stream struct {
 	// ProxyBin is the tesla vehicle-command HTTP proxy binary (started only when
 	// commands are enabled).
 	ProxyBin string `yaml:"proxy_bin"`
+	// ProxyPort is the loopback port the embedded vehicle-command proxy listens
+	// on. Loopback only: it signs commands with the car's private key and must
+	// not be reachable from the network.
+	ProxyPort int `yaml:"proxy_port"`
 	// TelemetryPort is the port fleet-telemetry listens on for the car's mTLS stream
 	// (the car dials in here). The public/forwarded port is advertised at enrollment.
 	TelemetryPort int `yaml:"telemetry_port"`
@@ -295,6 +299,7 @@ func Defaults() Config {
 			FleetTelemetryBin:    "/usr/local/bin/fleet-telemetry",
 			FleetTelemetryConfig: "/data/fleet-telemetry/config.json",
 			ProxyBin:             "/usr/local/bin/tesla-http-proxy",
+			ProxyPort:            4444,
 			TelemetryPort:        4443,
 			ZMQBind:              "tcp://0.0.0.0:5284",
 		},
@@ -592,13 +597,16 @@ func (c *Config) validate() error {
 		if c.Commands.ProxyURL == "" {
 			return fmt.Errorf("commands.proxy_url is required when commands.enabled")
 		}
-		// Embedded mode supervises fleet-telemetry but NOT the vehicle-command
-		// proxy, so the compose service name in the default proxy_url resolves to
-		// nothing inside the add-on and every command fails at send time. Refuse
-		// at startup instead: a wrong URL is a config error, not a runtime mystery.
-		if c.Stream.Embedded && strings.Contains(c.Commands.ProxyURL, "//vehicle-command-proxy") {
-			return fmt.Errorf("stream.embedded does not run a vehicle-command proxy yet: " +
-				"set commands.proxy_url to a reachable proxy, or disable commands")
+	}
+	// Embedded mode supervises the vehicle-command proxy itself and rewrites
+	// proxy_url to loopback, so the two ports must not collide -- a clash would
+	// surface as fleet-telemetry or the proxy crash-looping on bind.
+	if c.Stream.Embedded && c.Commands.Enabled {
+		if c.Stream.ProxyPort <= 0 {
+			return fmt.Errorf("stream.proxy_port is required when stream.embedded and commands.enabled")
+		}
+		if c.Stream.ProxyPort == c.Stream.TelemetryPort {
+			return fmt.Errorf("stream.proxy_port (%d) collides with stream.telemetry_port", c.Stream.ProxyPort)
 		}
 	}
 	return nil
