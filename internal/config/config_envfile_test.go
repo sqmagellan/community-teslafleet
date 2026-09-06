@@ -61,22 +61,31 @@ func TestSetStrFromFile(t *testing.T) {
 		}
 	})
 
-	// A typo'd path must not read as "unset": falling back is noisy but
-	// recoverable, whereas an empty credential fails somewhere unrelated.
-	t.Run("unreadable file falls back to the plain env var", func(t *testing.T) {
+	// An explicitly configured _FILE that cannot be read is FATAL. Falling back
+	// to the plain variable is fail-open for a credential: an unreadable
+	// TGW_DEBUG_TOKEN_FILE left the token empty, and an empty token means allow.
+	t.Run("unreadable file is an error, not a fallback", func(t *testing.T) {
 		t.Setenv("TGW_TEST_VALUE", "fallback")
 		t.Setenv("TGW_TEST_VALUE_FILE", filepath.Join(dir, "does-not-exist"))
+		fileErr = nil
 		var got string
 		setStr(&got, "TGW_TEST_VALUE")
-		if got != "fallback" {
-			t.Errorf("got %q, want fallback", got)
+		if fileErr == nil {
+			t.Error("want an error for an unreadable _FILE, got none")
+		}
+		if got != "" {
+			t.Errorf("got %q, want the value left unset", got)
 		}
 	})
 
-	t.Run("unreadable file with no plain env var leaves the default", func(t *testing.T) {
+	t.Run("unreadable file with no plain env var also errors", func(t *testing.T) {
 		t.Setenv("TGW_TEST_VALUE_FILE", filepath.Join(dir, "does-not-exist"))
+		fileErr = nil
 		got := "default"
 		setStr(&got, "TGW_TEST_VALUE")
+		if fileErr == nil {
+			t.Error("want an error for an unreadable _FILE, got none")
+		}
 		if got != "default" {
 			t.Errorf("got %q, want the default to survive", got)
 		}

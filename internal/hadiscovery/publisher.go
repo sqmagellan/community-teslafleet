@@ -98,8 +98,17 @@ func (p *Publisher) Start() error {
 		opts.SetPassword(p.cfg.HA.Password)
 	}
 	p.client = paho.NewClient(opts)
-	if tok := p.client.Connect(); tok.Wait() && tok.Error() != nil {
-		return tok.Error()
+	// Bounded: SetConnectRetry(true) makes Connect() block until the broker comes
+	// back, and Start() runs before the TeslaMate HTTP/WSS server is created. An
+	// unreachable HA broker used to hold the whole gateway in startup, taking
+	// TeslaMate down with an optional dependency. Paho keeps retrying in the
+	// background, so a late broker still gets its discovery on connect.
+	tok := p.client.Connect()
+	if !tok.WaitTimeout(10 * time.Second) {
+		p.log.Warn("MQTT broker not reachable yet; continuing and retrying in the background",
+			"broker", p.cfg.HA.Broker)
+	} else if err := tok.Error(); err != nil {
+		return err
 	}
 	go p.loop()
 	return nil
@@ -401,7 +410,8 @@ func (p *Publisher) genericDiscoveryConfig(v config.Vehicle, field string, val a
 	if _, ok := val.(bool); ok {
 		c["payload_on"] = "true"
 		c["payload_off"] = "false"
-		c["value_template"] = fmt.Sprintf("{{ 'true' if value_json.%s else 'false' }}", field)
+		// See the note below on default(false): render-identical, warning-free.
+		c["value_template"] = fmt.Sprintf("{{ 'true' if value_json.%s | default(false) else 'false' }}", field)
 		return "binary_sensor", c
 	}
 	c["value_template"] = fmt.Sprintf("{{ value_json.%s | default('') }}", field)
@@ -619,9 +629,13 @@ func (p *Publisher) discoveryConfig(v config.Vehicle, e entity, dev, origin map[
 	case "binary_sensor":
 		// State publishes Go bools as JSON true/false, but Jinja's default filter
 		// renders True/False (capitalized), which never matches payload_on/off.
-		// Normalize to the configured payloads: JSON true -> PayloadOn, false ->
-		// PayloadOff. (For 'locked', PayloadOn is "false" so the lock device_class
-		// inversion is preserved.)
+		// Normalize to lowercase "true"/"false" and let payload_on/payload_off
+		// carry the device_class inversion.
+		//
+		// The template must render the UNDERLYING boolean, not payload_on. For
+		// device_class lock, payload_on is "false" (on == unlocked), so rendering
+		// payload_on when locked==true made a locked car show as unlocked in HA —
+		// the inversion was applied twice.
 		on, off := e.PayloadOn, e.PayloadOff
 		if on == "" {
 			on, off = "true", "false"
@@ -631,7 +645,11 @@ func (p *Publisher) discoveryConfig(v config.Vehicle, e entity, dev, origin map[
 		if e.ValueTmpl != "" {
 			c["value_template"] = e.ValueTmpl
 		} else {
-			c["value_template"] = fmt.Sprintf("{{ '%s' if value_json.%s else '%s' }}", on, e.Key, off)
+			// default(false) keeps the RENDERED value identical (Jinja Undefined is already
+			// falsy) while stopping HA logging a template-variable warning for every optional
+			// key. The tire-warning keys are only present in snapshots that carried TPMS data,
+			// which produced 1,066,320 warnings / 235.6 MB of home-assistant.log by 2026-08-04.
+			c["value_template"] = fmt.Sprintf("{{ 'true' if value_json.%s | default(false) else 'false' }}", e.Key)
 		}
 	default: // sensor
 		c["value_template"] = p.valueTemplate(e)

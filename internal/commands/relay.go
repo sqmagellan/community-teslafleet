@@ -196,6 +196,16 @@ func (r *Relay) Handle(vin, key, payload string) {
 		return
 	}
 	var err error
+	// bad records a payload this handler will not act on. Every actuator below
+	// parses its payload explicitly and drops what it does not recognize: the
+	// lock bug was "anything that isn't LOCK means unlock", and the same shape
+	// was repeated across the switches, covers and selects. A retained MQTT
+	// topic, a trailing newline, or a typo must never resolve to one of the two
+	// physical states by default.
+	bad := func(expected string) {
+		r.log.Warn("ignoring command with unrecognized payload",
+			"vin", vin, "key", key, "payload", payload, "expected", expected)
+	}
 	switch key {
 	// --- buttons ---
 	case "flash_lights":
@@ -210,13 +220,23 @@ func (r *Relay) Handle(vin, key, payload string) {
 	case "trunk":
 		err = r.command(vin, "actuate_trunk", map[string]any{"which_trunk": "rear"})
 	case "charge_port":
-		if coverOpen(payload) {
+		open, ok := coverOpen(payload)
+		if !ok {
+			bad("OPEN/CLOSE")
+			return
+		}
+		if open {
 			err = r.command(vin, "charge_port_door_open", nil)
 		} else {
 			err = r.command(vin, "charge_port_door_close", nil)
 		}
 	case "windows":
-		if coverOpen(payload) {
+		open, ok := coverOpen(payload)
+		if !ok {
+			bad("OPEN/CLOSE")
+			return
+		}
+		if open {
 			err = r.command(vin, "window_control", map[string]any{"command": "vent", "lat": 0, "lon": 0})
 		} else {
 			lat, lon, ok := r.latlon(vin)
@@ -252,34 +272,73 @@ func (r *Relay) Handle(vin, key, payload string) {
 
 	// --- switches ---
 	case "charging":
-		if isOn(payload) {
+		on, ok := onOff(payload)
+		if !ok {
+			bad("ON/OFF")
+			return
+		}
+		if on {
 			err = r.command(vin, "charge_start", nil)
 		} else {
 			err = r.command(vin, "charge_stop", nil)
 		}
 	case "sentry":
-		err = r.command(vin, "set_sentry_mode", map[string]any{"on": isOn(payload)})
+		on, ok := onOff(payload)
+		if !ok {
+			bad("ON/OFF")
+			return
+		}
+		err = r.command(vin, "set_sentry_mode", map[string]any{"on": on})
 	case "climate_mode":
-		if strings.EqualFold(strings.TrimSpace(payload), "off") {
-			err = r.command(vin, "auto_conditioning_stop", nil)
-		} else {
+		on, ok := onOff(payload)
+		if !ok {
+			bad("ON/OFF")
+			return
+		}
+		if on {
 			err = r.command(vin, "auto_conditioning_start", nil)
+		} else {
+			err = r.command(vin, "auto_conditioning_stop", nil)
 		}
 	case "steering_wheel_heater":
-		err = r.command(vin, "remote_steering_wheel_heater_request", map[string]any{"on": isOn(payload)})
+		on, ok := onOff(payload)
+		if !ok {
+			bad("ON/OFF")
+			return
+		}
+		err = r.command(vin, "remote_steering_wheel_heater_request", map[string]any{"on": on})
 	case "cabin_overheat":
-		err = r.command(vin, "set_cabin_overheat_protection", map[string]any{"on": isOn(payload), "fan_only": false})
+		on, ok := onOff(payload)
+		if !ok {
+			bad("ON/OFF")
+			return
+		}
+		err = r.command(vin, "set_cabin_overheat_protection", map[string]any{"on": on, "fan_only": false})
 	case "preconditioning_max":
-		err = r.command(vin, "set_preconditioning_max", map[string]any{"on": isOn(payload), "manual_override": true})
+		on, ok := onOff(payload)
+		if !ok {
+			bad("ON/OFF")
+			return
+		}
+		err = r.command(vin, "set_preconditioning_max", map[string]any{"on": on, "manual_override": true})
 	case "guest_mode":
-		err = r.command(vin, "guest_mode", map[string]any{"enable": isOn(payload)})
+		on, ok := onOff(payload)
+		if !ok {
+			bad("ON/OFF")
+			return
+		}
+		err = r.command(vin, "guest_mode", map[string]any{"enable": on})
 
 	// --- lock ---
 	case "lock":
-		if strings.EqualFold(payload, "LOCK") {
+		switch strings.ToUpper(strings.TrimSpace(payload)) {
+		case "LOCK":
 			err = r.command(vin, "door_lock", nil)
-		} else {
+		case "UNLOCK":
 			err = r.command(vin, "door_unlock", nil)
+		default:
+			bad("LOCK/UNLOCK")
+			return
 		}
 
 	// --- numbers ---
@@ -307,7 +366,11 @@ func (r *Relay) Handle(vin, key, payload string) {
 
 	// --- selects ---
 	case "climate_keeper":
-		mode := map[string]int{"off": 0, "keep": 1, "dog": 2, "camp": 3}[strings.ToLower(strings.TrimSpace(payload))]
+		mode, ok := lookupOption(payload, climateKeeperModes)
+		if !ok {
+			bad("off/keep/dog/camp")
+			return
+		}
 		err = r.command(vin, "set_climate_keeper_mode", map[string]any{"climate_keeper_mode": mode})
 
 	// --- software updates ---
@@ -327,13 +390,23 @@ func (r *Relay) Handle(vin, key, payload string) {
 			r.log.Warn("valet command but no valet_pin configured")
 			return
 		}
-		err = r.command(vin, "set_valet_mode", map[string]any{"on": isOn(payload), "password": r.valetPIN})
+		on, ok := onOff(payload)
+		if !ok {
+			bad("ON/OFF")
+			return
+		}
+		err = r.command(vin, "set_valet_mode", map[string]any{"on": on, "password": r.valetPIN})
 	case "speed_limit":
 		if r.speedPIN == "" {
 			r.log.Warn("speed_limit command but no speed_limit_pin configured")
 			return
 		}
-		if isOn(payload) {
+		on, ok := onOff(payload)
+		if !ok {
+			bad("ON/OFF")
+			return
+		}
+		if on {
 			err = r.command(vin, "speed_limit_activate", map[string]any{"pin": r.speedPIN})
 		} else {
 			err = r.command(vin, "speed_limit_deactivate", map[string]any{"pin": r.speedPIN})
@@ -350,11 +423,20 @@ func (r *Relay) Handle(vin, key, payload string) {
 			r.log.Warn("pin_to_drive command but no pin_to_drive_pin configured")
 			return
 		}
-		err = r.command(vin, "set_pin_to_drive", map[string]any{"on": isOn(payload), "password": r.drivePIN})
+		on, ok := onOff(payload)
+		if !ok {
+			bad("ON/OFF")
+			return
+		}
+		err = r.command(vin, "set_pin_to_drive", map[string]any{"on": on, "password": r.drivePIN})
 
 	default:
 		if pos, ok := seatPositions[key]; ok {
-			lvl := map[string]int{"off": 0, "low": 1, "medium": 2, "high": 3}[strings.ToLower(strings.TrimSpace(payload))]
+			lvl, lok := lookupOption(payload, seatHeaterLevels)
+			if !lok {
+				bad("off/low/medium/high")
+				return
+			}
 			err = r.command(vin, "remote_seat_heater_request", map[string]any{"seat_position": pos, "level": lvl})
 			break
 		}
@@ -394,6 +476,27 @@ const vehicleDataEndpoints = "charge_state;climate_state;vehicle_config;vehicle_
 // and that is returned as an error here, because waking a car to read it spends
 // range on something a seed can simply wait for -- callers fetch opportunistically
 // while the car is already online.
+// AccessToken returns a valid Tesla access token, refreshing if needed.
+//
+// This relay owns the OAuth credential. Tesla rotates the refresh token on every
+// use, so two components refreshing the same one independently is not a race
+// that can be tuned away -- whichever loses spends a token the other still
+// holds, and the account is stranded. The onboarding wizard calls this rather
+// than running its own refresh.
+func (r *Relay) AccessToken() (string, error) { return r.tm.token() }
+
+// SetRefreshToken adopts an operator-supplied refresh token: persisted to the
+// cache and used from the next call on, with no restart. It replaces both the
+// in-memory copy and the file, which used to drift apart -- the wizard wrote the
+// file while the relay kept serving the token it read at startup.
+func (r *Relay) SetRefreshToken(tok string) error {
+	tok = strings.TrimSpace(tok)
+	if tok == "" {
+		return fmt.Errorf("empty refresh token")
+	}
+	return r.tm.adopt(tok)
+}
+
 func (r *Relay) VehicleData(vin string) (map[string]any, error) {
 	if r.fleetAPI == "" {
 		return nil, fmt.Errorf("fleet_api_url not set")
@@ -687,17 +790,45 @@ func (r *Relay) post(urlStr string, body map[string]any) error {
 	return nil
 }
 
-func isOn(p string) bool {
+// onOff parses an HA switch payload. ok is false for anything unrecognized, so
+// a retained topic, an empty message or a typo is dropped instead of resolving
+// to "off" -- which for guest_mode, sentry and pin_to_drive means silently
+// disarming the car.
+func onOff(p string) (bool, bool) {
 	switch strings.ToUpper(strings.TrimSpace(p)) {
-	case "ON", "TRUE", "1", "LOCK", "PRESS":
-		return true
+	case "ON", "TRUE", "1":
+		return true, true
+	case "OFF", "FALSE", "0":
+		return false, true
 	}
-	return false
+	return false, false
 }
 
-// coverOpen reports whether an HA cover payload requests opening (vs closing).
-func coverOpen(p string) bool {
-	return strings.EqualFold(strings.TrimSpace(p), "OPEN")
+// coverOpen parses an HA cover payload. STOP is not accepted: these covers are
+// actuators with no midpoint, and treating STOP as CLOSE would close a trunk
+// somebody asked to halt.
+func coverOpen(p string) (bool, bool) {
+	switch strings.ToUpper(strings.TrimSpace(p)) {
+	case "OPEN":
+		return true, true
+	case "CLOSE", "CLOSED":
+		return false, true
+	}
+	return false, false
+}
+
+var (
+	climateKeeperModes = map[string]int{"off": 0, "keep": 1, "dog": 2, "camp": 3}
+	seatHeaterLevels   = map[string]int{"off": 0, "low": 1, "medium": 2, "high": 3}
+)
+
+// lookupOption resolves a select payload against its advertised options. A map
+// miss used to yield the zero value, so an unknown climate-keeper mode turned
+// the keeper OFF and an unknown seat level turned the heater off, both looking
+// like a deliberate command.
+func lookupOption(p string, table map[string]int) (int, bool) {
+	v, ok := table[strings.ToLower(strings.TrimSpace(p))]
+	return v, ok
 }
 
 // ---- token manager ----
@@ -735,20 +866,32 @@ func newTokenManager(cfg config.Commands, log *slog.Logger) *tokenManager {
 }
 
 // persist writes the current refresh token to the cache file (atomic rename).
-func (t *tokenManager) persist() {
+// adopt replaces the refresh token and drops the cached access token, so the
+// next call proves the new credential rather than coasting on the old session.
+func (t *tokenManager) adopt(tok string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.refresh = tok
+	t.access = ""
+	t.expiry = time.Time{}
+	return t.persist()
+}
+
+func (t *tokenManager) persist() error {
 	if t.cachePath == "" {
-		return
+		return nil
 	}
 	tmp := t.cachePath + ".tmp"
 	if err := os.WriteFile(tmp, []byte(t.refresh), 0o600); err != nil {
 		t.log.Warn("persist refresh token failed", "err", err)
-		return
+		return err
 	}
 	if err := os.Rename(tmp, t.cachePath); err != nil {
 		t.log.Warn("persist refresh token rename failed", "err", err)
-		return
+		return err
 	}
 	t.log.Info("persisted rotated refresh token", "path", t.cachePath)
+	return nil
 }
 
 // token returns a valid access token, refreshing if missing or near expiry.
@@ -797,7 +940,7 @@ func (t *tokenManager) doRefresh() error {
 	if out.RefreshToken != "" && out.RefreshToken != t.refresh {
 		// Tesla rotates the refresh token on use; persist it so restarts survive.
 		t.refresh = out.RefreshToken
-		t.persist()
+		_ = t.persist()
 	}
 	ttl := out.ExpiresIn
 	if ttl <= 0 {

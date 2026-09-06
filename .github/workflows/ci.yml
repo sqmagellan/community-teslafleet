@@ -90,7 +90,10 @@ jobs:
       # installs golangci-lint v1, which rejects it outright.
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Pinned, not `latest`: a linter that changes under you turns an
+          # unrelated PR red, and the gate script has to run the same version or
+          # "passes locally" means nothing. Bump deliberately.
+          version: v2.13.2
 
   docker:
     runs-on: ubuntu-latest
