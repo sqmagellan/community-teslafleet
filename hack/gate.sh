@@ -25,7 +25,12 @@
 set -uo pipefail
 
 GO_IMAGE="${GATE_GO_IMAGE:-golang:1.25}"
-LINT_IMAGE="${GATE_LINT_IMAGE:-golangci/golangci-lint:latest}"
+# Pinned to the same version .github/workflows/ci.yml uses. With `latest` on both
+# sides the gate and CI silently drift onto different linters, and "it passed
+# locally" stops being evidence. Bump the two together.
+#
+# The -alpine variant has no bash, so the wrapper below runs under sh.
+LINT_IMAGE="${GATE_LINT_IMAGE:-golangci/golangci-lint:v2.13.2-alpine}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM_REF="${GATE_UPSTREAM_REF:-upstream-main}"
 
@@ -148,7 +153,7 @@ PYEOF
   # exemptions are unactionable Close calls.
   if docker run --rm -v "$REPO:/src:ro" \
       -e GOCACHE=/tmp/gc -e GOMODCACHE=/tmp/gm -e GOLANGCI_LINT_CACHE=/tmp/glc \
-      "$LINT_IMAGE" bash -c "cp -a /src /work && cd /work && golangci-lint run ./..." \
+      "$LINT_IMAGE" sh -c "cp -a /src /work && cd /work && golangci-lint run ./..." \
       >/tmp/gate-lint.log 2>&1; then
     ok "golangci-lint (errcheck enabled)"
   else
