@@ -57,6 +57,14 @@ func main() {
 	var bg sync.WaitGroup
 	defer waitBackground(&bg, log)
 
+	// The state snapshotter runs on its OWN context, cancelled only after ingest
+	// has been stopped. Sharing the signal context raced: SIGTERM triggered the
+	// final Save at the same instant the consumer was still applying its last
+	// message, so an accepted update could be missing from disk after a clean
+	// shutdown. Deferred here, so it runs immediately before waitBackground.
+	persistCtx, cancelPersist := context.WithCancel(context.Background())
+	defer cancelPersist()
+
 	// All-in-one mode (HA add-on): run fleet-telemetry — and the vehicle-command
 	// proxy when commands are enabled — as supervised child processes, and ingest
 	// from the dispatcher they bind locally. Standalone leaves this off and runs
@@ -123,7 +131,7 @@ func main() {
 		bg.Add(1)
 		go func() {
 			defer bg.Done()
-			st.Persist(ctx, p, 30*time.Second, log)
+			st.Persist(persistCtx, p, 30*time.Second, log)
 		}()
 	}
 
