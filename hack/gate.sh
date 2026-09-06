@@ -65,9 +65,17 @@ stage() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 # gorun executes a go toolchain command against a THROWAWAY COPY of the repo.
 # The copy matters: it keeps the container from writing root-owned build
 # artifacts or a mutated go.mod back into the working tree.
+# GOTOOLCHAIN is pinned to the go.mod directive on purpose. Without it the
+# container uses whatever Go it ships, which is newer -- so govulncheck scanned a
+# PATCHED standard library and reported clean while CI, which honours go.mod,
+# found six reachable stdlib advisories. A gate that grades a different binary
+# from the one that ships is not a gate.
+GO_PIN="go$(awk '/^go /{print $2; exit}' "$REPO/go.mod")"
+
 gorun() {
   docker run --rm -v "$REPO:/src:ro" \
     -e GOCACHE=/tmp/gocache -e GOMODCACHE=/tmp/gomod -e GOPATH=/tmp/gopath \
+    -e GOTOOLCHAIN="$GO_PIN" \
     "$GO_IMAGE" bash -c "cp -a /src /work && cd /work && $1"
 }
 

@@ -621,6 +621,19 @@ supervised processes instead of one, 4443/4444/4460 all listening with no
 collision, and a POST to `https://127.0.0.1:4444` completing TLS and returning
 403. Only the signing path beyond that needs real credentials.
 
+### `fix/go-1.25.13` — six reachable stdlib advisories, and the gate that hid them
+
+CI found them; the gate did not. `setup-go` honours the `go` directive in
+`go.mod`, which was 1.25.12, and govulncheck reported GO-2026-6218, -6091,
+-6090, -6089, -5972 and -5026 reachable through `http.Client.Do`, `.Get` and
+`.PostForm` — all fixed in 1.25.13.
+
+The gate ran the same tool and said clean, because it ran inside whatever Go the
+`golang:1.25` image currently ships, which was already 1.25.13. It was grading a
+standard library that does not ship. The gate now exports `GOTOOLCHAIN` from the
+`go.mod` directive, so it scans the toolchain the build actually uses; put 1.25.12
+back and it fails, which is the check that the pin is real.
+
 ### `fix/pin-linter` — CI and the gate run the same linter
 
 Both used `latest`, so they could silently drift onto different versions and
