@@ -37,9 +37,18 @@ func LoadTemplate(path string) (*Template, error) {
 }
 
 // Clone returns a fresh deep copy of the template as a mutable map.
+//
+// A nil receiver yields the default skeleton. Templates are loaded per
+// CONFIGURED VIN, but /api/1/vehicles also lists auto-discovered VINs, so a
+// zero-config deployment looks one up and gets nil -- which used to panic the
+// vehicle_data handler on the first request for a car nobody had configured.
 func (t *Template) Clone() map[string]any {
+	b := defaultTemplate()
+	if t != nil {
+		b = t.bytes
+	}
 	var m map[string]any
-	_ = json.Unmarshal(t.bytes, &m)
+	_ = json.Unmarshal(b, &m)
 	if m == nil {
 		m = map[string]any{}
 	}

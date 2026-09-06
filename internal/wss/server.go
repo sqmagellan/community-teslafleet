@@ -11,7 +11,9 @@ package wss
 import (
 	"encoding/json"
 	"log/slog"
+	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,9 +41,25 @@ func NewServer(st *store.Store, cfg *config.Config, log *slog.Logger) *Server {
 		cfg:      cfg,
 		byKey:    config.VehiclesByKey(cfg),
 		log:      log,
-		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
+		upgrader: websocket.Upgrader{CheckOrigin: sameOriginOrNone},
 		interval: time.Second,
 	}
+}
+
+// sameOriginOrNone is the WebSocket origin policy. TeslaMate is a server-side
+// client and sends no Origin header, so an absent Origin is allowed. A present
+// Origin is a browser, and it must match the Host — otherwise any page the
+// operator visits could open this socket and read live vehicle position.
+func sameOriginOrNone(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
 }
 
 type inMsg struct {
@@ -100,7 +118,7 @@ func (s *Server) Handler() http.HandlerFunc {
 			}
 			switch m.MsgType {
 			case "data:subscribe_oauth":
-				veh, ok := s.byKey[m.Tag]
+				veh, ok := s.lookupTag(m.Tag)
 				if !ok {
 					_ = write(map[string]any{"msg_type": "data:error", "tag": m.Tag, "error_type": "vehicle_error", "value": "unknown vehicle"})
 					continue
@@ -125,6 +143,24 @@ func (s *Server) Handler() http.HandlerFunc {
 			}
 		}
 	}
+}
+
+// lookupTag resolves a subscription tag to a vehicle. Configured vehicles come
+// from the startup map; anything else is matched against the VINs the store has
+// actually seen, the same fallback /api/1/vehicles uses. Without it a
+// zero-config deployment advertises a car over HTTP and then refuses to stream
+// it, so TeslaMate never gets near-real-time drive detection.
+func (s *Server) lookupTag(tag string) (config.Vehicle, bool) {
+	if v, ok := s.byKey[tag]; ok {
+		return v, true
+	}
+	for _, vin := range s.store.VINs() {
+		v := config.AutoVehicle(vin)
+		if tag == v.VIN || tag == v.IDString() || tag == strconv.FormatInt(v.VehicleID, 10) {
+			return v, true
+		}
+	}
+	return config.Vehicle{}, false
 }
 
 func (s *Server) push(veh config.Vehicle, tag string, write func(any) error, stop chan struct{}) {
@@ -163,8 +199,8 @@ func buildCSV(snap store.Snapshot, d store.Derived, units config.Units, now time
 	if v, ok := snap.Num(store.FieldOdometer); ok {
 		f[2] = strconv.FormatFloat(vehicledata.RangeToMiles(v, units.OdometerInput), 'f', 2, 64)
 	}
-	if v, ok := snap.Num(store.FieldSoc); ok {
-		f[3] = strconv.Itoa(int(v))
+	if v, ok := vehicledata.DisplayedSOC(snap); ok {
+		f[3] = strconv.Itoa(v)
 	}
 	// f[4] elevation: not enrolled → empty
 	if v, ok := snap.Num(store.FieldGpsHeading); ok {
@@ -175,7 +211,7 @@ func buildCSV(snap store.Snapshot, d store.Derived, units config.Units, now time
 		f[6] = strconv.FormatFloat(lat, 'f', 6, 64)
 		f[7] = strconv.FormatFloat(lng, 'f', 6, 64)
 	}
-	f[8] = strconv.Itoa(drivePower(snap)) // power (numeric → real online)
+	f[8] = strconv.Itoa(drivePower(snap, d)) // power (numeric → real online)
 	if g, ok := snap.Field(store.FieldGear); ok {
 		f[9] = store.GearString(g.Value)
 	}
@@ -188,9 +224,17 @@ func buildCSV(snap store.Snapshot, d store.Derived, units config.Units, now time
 	return strings.Join(f, ",")
 }
 
-func drivePower(snap store.Snapshot) int {
+// drivePower mirrors the HTTP vehicle_data mapping: negative while charging,
+// pack power while driving. The two paths must agree — TeslaMate reads both for
+// the same instant and a disagreement shows up as a sawtooth in the history.
+func drivePower(snap store.Snapshot, d store.Derived) int {
 	if p, ok := snap.ChargerPower(); ok && p > 0 {
 		return -int(p) // charging draws negative drive power
+	}
+	if d.Driving {
+		if kw, ok := vehicledata.PackPowerKW(snap); ok {
+			return int(math.Round(kw))
+		}
 	}
 	return 0
 }
