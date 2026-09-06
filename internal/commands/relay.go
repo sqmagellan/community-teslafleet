@@ -276,10 +276,17 @@ func (r *Relay) Handle(vin, key, payload string) {
 
 	// --- lock ---
 	case "lock":
-		if strings.EqualFold(payload, "LOCK") {
+		// Explicit allow-list. "anything that isn't LOCK means unlock" turned a
+		// trailing newline from `mosquitto_pub` -- or any typo -- into an unlock
+		// command on a real car.
+		switch strings.ToUpper(strings.TrimSpace(payload)) {
+		case "LOCK":
 			err = r.command(vin, "door_lock", nil)
-		} else {
+		case "UNLOCK":
 			err = r.command(vin, "door_unlock", nil)
+		default:
+			r.log.Warn("ignoring lock command with unrecognized payload", "vin", vin, "payload", payload)
+			return
 		}
 
 	// --- numbers ---
