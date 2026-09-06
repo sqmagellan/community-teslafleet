@@ -184,12 +184,29 @@ func (s *Server) push(veh config.Vehicle, tag string, write func(any) error, sto
 
 // buildCSV renders the 13 legacy streaming fields. Empty string = nil. power is
 // always numeric so TeslaMate treats it as a "real" online (not a subsystem probe).
+//
+// f[0] is the OBSERVATION time, not the send time: TeslaMate stores it verbatim
+// as the position's date (vehicle.ex create_position/2), and while driving it
+// inserts a row for every frame carrying gear D/N/R. Stamping the send time on
+// a frozen snapshot therefore wrote one position per second at the last known
+// coordinates, each claiming to be a fresh fix, which is how a stalled feed
+// grew a fake parked tail on the end of a drive.
+//
+// Frames are NOT suppressed when the observation has not advanced, tempting as
+// that looks. TeslaMate's stream client arms a 30-second inactivity timer that
+// it resets on any received frame and, on expiry, reports :inactive and CLOSES
+// the socket (tesla_api/stream.ex handle_info(:timeout, ...)). Going quiet
+// would trade duplicate rows for a permanent disconnect/reconnect cycle.
 func buildCSV(snap store.Snapshot, d store.Derived, units config.Units, now time.Time) string {
 	f := make([]string, 13)
 	for i := range f {
 		f[i] = ""
 	}
-	f[0] = strconv.FormatInt(now.UnixMilli(), 10) // time
+	obs := now
+	if !snap.LastV.IsZero() {
+		obs = snap.LastV
+	}
+	f[0] = strconv.FormatInt(obs.UnixMilli(), 10) // time
 
 	if d.Driving {
 		if v, ok := snap.Num(store.FieldVehicleSpeed); ok {

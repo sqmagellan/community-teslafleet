@@ -32,8 +32,22 @@ func Build(snap store.Snapshot, d store.Derived, veh config.Vehicle, tmpl *Templ
 	vs := subObj(resp, "vehicle_state")
 	vc := subObj(resp, "vehicle_config")
 
-	tsSec := now.Unix()
-	tsMs := now.UnixMilli()
+	// Section timestamps are the OBSERVATION time, not the time this document
+	// was rendered. TeslaMate stores a streamed position's date verbatim
+	// (vehicle.ex create_position/2) and compares drive_state.timestamp across
+	// both paths, so stamping "now" on frozen values told it the car had a new
+	// fix at this instant at the old coordinates. Falling back to now only when
+	// nothing has ever been streamed keeps a first boot sane.
+	//
+	// Repeats are safe on both of TeslaMate's guards: a fetch is discarded only
+	// when strictly older (`now < last`) and stream data only when the stored
+	// timestamp is strictly greater, so an unchanged observation is accepted.
+	obs := now
+	if !snap.LastV.IsZero() {
+		obs = snap.LastV
+	}
+	tsSec := obs.Unix()
+	tsMs := obs.UnixMilli()
 	ds["timestamp"], cs["timestamp"], cls["timestamp"], vs["timestamp"] = tsMs, tsMs, tsMs, tsMs
 
 	// ---- drive_state ----

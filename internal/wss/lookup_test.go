@@ -81,3 +81,35 @@ func TestCheckOrigin(t *testing.T) {
 		}
 	}
 }
+
+// The soc column and the HTTP document must agree, and so must the clock. f[0]
+// is what TeslaMate stores as the position's date, so it has to be the moment
+// the telemetry was observed -- not the moment the frame was sent. A stalled
+// feed used to write one position per second at the last known coordinates,
+// each claiming to be a fresh fix.
+func TestBuildCSV_TimeIsObservationTime(t *testing.T) {
+	obs := time.Unix(1_800_000_000, 0).UTC()
+	snap := store.Snapshot{VIN: "V", LastV: obs, Fields: map[string]store.FieldValue{
+		store.FieldGear: {Value: "D"},
+	}}
+	d := store.Derived{State: "online", Driving: true}
+
+	first := strings.Split(buildCSV(snap, d, config.Units{}, obs.Add(time.Second)), ",")[0]
+	second := strings.Split(buildCSV(snap, d, config.Units{}, obs.Add(time.Minute)), ",")[0]
+
+	if want := strconv.FormatInt(obs.UnixMilli(), 10); first != want {
+		t.Errorf("time = %s, want the observation %s", first, want)
+	}
+	if first != second {
+		t.Errorf("time advanced without new telemetry: %s then %s", first, second)
+	}
+}
+
+func TestBuildCSV_NoTelemetryFallsBackToNow(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	snap := store.Snapshot{VIN: "V", Fields: map[string]store.FieldValue{}}
+	got := strings.Split(buildCSV(snap, store.Derived{}, config.Units{}, now), ",")[0]
+	if want := strconv.FormatInt(now.UnixMilli(), 10); got != want {
+		t.Errorf("time = %s, want %s", got, want)
+	}
+}
