@@ -410,8 +410,33 @@ func (p *Publisher) handleCommand(_ paho.Client, m paho.Message) {
 	key, payload := parts[3], string(m.Payload())
 	// Run the relay call off the paho callback: a command can take up to 30s and
 	// would otherwise block the MQTT client's incoming-message dispatch.
-	go p.relay.Handle(vin, key, payload)
+	go func() {
+		p.publishResult(parts[1], p.relay.Handle(vin, key, payload))
+	}()
 }
+
+// publishResult reports one command's terminal outcome back to the caller.
+//
+// The topic is not retained. A Result describes a single attempt, and a retained value
+// would be redelivered on every reconnect as though it were current.
+//
+// QoS 0: a result is advisory, and blocking a command handler on a broker round-trip
+// to deliver an advisory trades a real cost for a small one.
+func (p *Publisher) publishResult(pubID string, res commands.Result) {
+	if p.client == nil {
+		return
+	}
+	body, err := json.Marshal(res)
+	if err != nil {
+		p.log.Error("command result marshal failed", "id", pubID, "err", err)
+		return
+	}
+	topic := fmt.Sprintf("%s/%s/cmd_result", p.cfg.HA.StateTopicBase, pubID)
+	if tok := p.client.Publish(topic, 0, false, body); tok.Wait() && tok.Error() != nil {
+		p.log.Error("command result publish failed", "topic", topic, "err", tok.Error())
+	}
+}
+
 
 func (p *Publisher) commandDiscoveryConfig(v config.Vehicle, ce commands.Entity, dev, origin map[string]any) map[string]any {
 	id := p.pubID(v)

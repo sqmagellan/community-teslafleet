@@ -38,8 +38,12 @@ type fakeCar struct {
 	awake        atomic.Bool
 	wakeCalls    atomic.Int32
 	commandCalls atomic.Int32
-	proxy        *httptest.Server
-	fleet        *httptest.Server
+	// lastCommand is the Tesla command name most recently requested. commandCalls
+	// alone cannot distinguish auto_conditioning_start from _stop, so without it no
+	// test can assert WHICH command a payload produced. Empty when nothing was sent.
+	lastCommand atomic.Value // string
+	proxy       *httptest.Server
+	fleet       *httptest.Server
 }
 
 func newFakeCar() *fakeCar {
@@ -51,8 +55,9 @@ func newFakeCar() *fakeCar {
 		f.awake.Store(true)
 		fmt.Fprint(w, `{"response":{"state":"online"}}`)
 	})
-	proxyMux.HandleFunc("POST /api/1/vehicles/{vin}/command/{name}", func(w http.ResponseWriter, _ *http.Request) {
+	proxyMux.HandleFunc("POST /api/1/vehicles/{vin}/command/{name}", func(w http.ResponseWriter, req *http.Request) {
 		f.commandCalls.Add(1)
+		f.lastCommand.Store(req.PathValue("name"))
 		if !f.awake.Load() {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprint(w, `{"response":null,"error":"vehicle unavailable: vehicle is offline or asleep","error_description":""}`)
@@ -169,5 +174,71 @@ func TestCommandNonSleepErrorIsNotRetried(t *testing.T) {
 	}
 	if got := f.commandCalls.Load(); got != 1 {
 		t.Errorf("non-sleep error caused %d command attempts, want 1 (no retry)", got)
+	}
+}
+
+// TestHandleRejectsWithoutSending pins the invariant behind the Result type: a
+// refusal must report rejected AND send nothing. Before it existed, several paths
+// returned without sending anything and without an error -- an unknown VIN, a window
+// CLOSE with no known GPS, an unknown command key, a malformed number, a PIN-gated
+// command with no PIN -- so the caller saw no failure and no effect.
+//
+// The assertion is the invariant rather than the enum on purpose. Returning
+// "rejected" while still sending would satisfy a string comparison and still be the
+// original defect.
+func TestHandleRejectsWithoutSending(t *testing.T) {
+	fastWake(t)
+	f := newFakeCar()
+	defer f.close()
+	f.awake.Store(true) // online: isolate payload/config handling from the wake path
+
+	r := f.relay()
+	r.knownVINs = map[string]bool{"VIN1": true} // non-empty == explicit allow-list
+
+	cases := []struct {
+		name    string
+		vin     string
+		key     string
+		payload string
+	}{
+		{"unknown VIN", "VIN2", "flash_lights", "PRESS"},
+		{"unknown command key", "VIN1", "not_a_command", "PRESS"},
+		{"malformed charge_limit", "VIN1", "charge_limit", "abc"},
+		{"window CLOSE with no GPS known", "VIN1", "windows", "CLOSE"},
+		{"homelink with no GPS known", "VIN1", "homelink", "PRESS"},
+	}
+	for _, c := range cases {
+		f.lastCommand.Store("")
+		got := r.Handle(c.vin, c.key, c.payload)
+
+		if got.Outcome != OutcomeRejected {
+			t.Errorf("%s: outcome = %q, want %q", c.name, got.Outcome, OutcomeRejected)
+		}
+		if got.Reason == "" {
+			t.Errorf("%s: rejected with no reason", c.name)
+		}
+		if sent := f.lastCommand.Load(); sent != "" {
+			t.Errorf("%s: reported rejected but SENT %v", c.name, sent)
+		}
+	}
+}
+
+// TestHandleReportsSentWhenTheProxyAccepts covers the other direction and pins what
+// "sent" is allowed to mean: the proxy accepted the command, NOT that the car acted.
+func TestHandleReportsSentWhenTheProxyAccepts(t *testing.T) {
+	fastWake(t)
+	f := newFakeCar()
+	defer f.close()
+	f.awake.Store(true)
+
+	got := f.relay().Handle("VIN1", "flash_lights", "PRESS")
+	if got.Outcome != OutcomeSent {
+		t.Fatalf("outcome = %q, want %q (reason %q)", got.Outcome, OutcomeSent, got.Reason)
+	}
+	if got.Reason != "" {
+		t.Errorf("a sent result must carry no reason, got %q", got.Reason)
+	}
+	if sent := f.lastCommand.Load(); sent != "flash_lights" {
+		t.Errorf("proxy saw %v, want flash_lights", sent)
 	}
 }
