@@ -17,7 +17,7 @@ curl -s \
   > templates/<VIN>.json
 ```
 
-The file may be the bare response object or `{"response": {...}}` — both work.
+The file may be the bare response object or `{"response": {...}}`. Both work.
 
 Re-capture after a major firmware update (or enroll the `Version` telemetry field
 to keep `car_version` live).
