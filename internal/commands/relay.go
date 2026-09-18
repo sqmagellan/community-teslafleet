@@ -188,13 +188,48 @@ func NewRelay(cfg config.Commands, knownVINs []string, st locator, log *slog.Log
 	return r
 }
 
-// Handle maps an HA command (key + payload) to a Tesla command and sends it.
-func (r *Relay) Handle(vin, key, payload string) {
+// Result is the terminal outcome of one command message.
+//
+// Commands are otherwise fire-and-forget. Several paths -- an unrecognized payload, a
+// close with no known GPS, an unknown command key -- log a warning and return without
+// sending anything, leaving the caller to assume the command was applied. Result makes
+// that refusal observable.
+//
+// What each outcome claims:
+//
+//	OutcomeSent     the proxy accepted the command. Not proof of effect: the gateway
+//	                sees the API's answer, never the car.
+//	OutcomeRejected nothing was sent.
+//	OutcomeFailed   a send was attempted and returned an error.
+type Result struct {
+	Key     string `json:"key"`
+	Payload string `json:"payload"`
+	Outcome string `json:"outcome"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+const (
+	OutcomeSent     = "sent"
+	OutcomeRejected = "rejected"
+	OutcomeFailed   = "failed"
+)
+
+// Handle maps an HA command (key + payload) to a Tesla command and sends it, and
+// reports the terminal outcome as a Result.
+//
+// The result is a named return whose outcome defaults to rejected. Every early return
+// in the switch below sends nothing, so each one reports the honest default without
+// being changed individually, and a path that forgets to classify itself cannot claim
+// to have sent anything.
+func (r *Relay) Handle(vin, key, payload string) (res Result) {
+	res = Result{Key: key, Payload: payload, Outcome: OutcomeRejected,
+		Reason: "rejected before dispatch"}
 	// An empty knownVINs set means zero-config auto-discovery: accept any VIN. A
 	// non-empty set acts as an explicit allow-list.
 	if len(r.knownVINs) > 0 && !r.knownVINs[vin] {
 		r.log.Warn("rejecting command for unknown VIN", "vin", vin, "key", key)
-		return
+		res.Reason = "unknown VIN"
+		return res
 	}
 	var err error
 	// bad records a payload this handler will not act on. Every actuator below
@@ -242,8 +277,11 @@ func (r *Relay) Handle(vin, key, payload string) {
 		} else {
 			lat, lon, ok := r.latlon(vin)
 			if !ok {
+				// Tesla geofences window CLOSE to the owner's position, so it cannot be
+				// sent without one. Previously this returned silently.
 				r.log.Warn("close windows needs GPS but none known", "vin", vin)
-				return
+				res.Reason = "close windows needs GPS but none known"
+				return res
 			}
 			err = r.command(vin, "window_control", map[string]any{"command": "close", "lat": lat, "lon": lon})
 		}
@@ -257,7 +295,8 @@ func (r *Relay) Handle(vin, key, payload string) {
 		lat, lon, ok := r.latlon(vin)
 		if !ok {
 			r.log.Warn("homelink needs GPS but none known", "vin", vin)
-			return
+			res.Reason = "homelink needs GPS but none known"
+			return res
 		}
 		err = r.command(vin, "trigger_homelink", map[string]any{"lat": lat, "lon": lon})
 	case "media_toggle":
@@ -347,21 +386,24 @@ func (r *Relay) Handle(vin, key, payload string) {
 		pct, e := parseNum(payload)
 		if e != nil {
 			r.log.Warn("bad charge_limit payload", "payload", payload)
-			return
+			res.Reason = "bad charge_limit payload"
+			return res
 		}
 		err = r.command(vin, "set_charge_limit", map[string]any{"percent": int(pct)})
 	case "charging_amps":
 		a, e := parseNum(payload)
 		if e != nil {
 			r.log.Warn("bad charging_amps payload", "payload", payload)
-			return
+			res.Reason = "bad charging_amps payload"
+			return res
 		}
 		err = r.command(vin, "set_charging_amps", map[string]any{"charging_amps": int(a)})
 	case "climate_temp":
 		t, e := parseNum(payload)
 		if e != nil {
 			r.log.Warn("bad climate_temp payload", "payload", payload)
-			return
+			res.Reason = "bad climate_temp payload"
+			return res
 		}
 		err = r.command(vin, "set_temps", map[string]any{"driver_temp": t, "passenger_temp": t})
 
@@ -389,7 +431,8 @@ func (r *Relay) Handle(vin, key, payload string) {
 	case "valet":
 		if r.valetPIN == "" {
 			r.log.Warn("valet command but no valet_pin configured")
-			return
+			res.Reason = "valet_pin not configured"
+			return res
 		}
 		on, ok := onOff(payload)
 		if !ok {
@@ -400,7 +443,8 @@ func (r *Relay) Handle(vin, key, payload string) {
 	case "speed_limit":
 		if r.speedPIN == "" {
 			r.log.Warn("speed_limit command but no speed_limit_pin configured")
-			return
+			res.Reason = "speed_limit_pin not configured"
+			return res
 		}
 		on, ok := onOff(payload)
 		if !ok {
@@ -416,13 +460,15 @@ func (r *Relay) Handle(vin, key, payload string) {
 		v, e := parseNum(payload)
 		if e != nil {
 			r.log.Warn("bad speed_limit_value payload", "payload", payload)
-			return
+			res.Reason = "bad speed_limit_value payload"
+			return res
 		}
 		err = r.command(vin, "speed_limit_set_limit", map[string]any{"limit_mph": v})
 	case "pin_to_drive":
 		if r.drivePIN == "" {
 			r.log.Warn("pin_to_drive command but no pin_to_drive_pin configured")
-			return
+			res.Reason = "pin_to_drive_pin not configured"
+			return res
 		}
 		on, ok := onOff(payload)
 		if !ok {
@@ -442,13 +488,19 @@ func (r *Relay) Handle(vin, key, payload string) {
 			break
 		}
 		r.log.Warn("unknown command key", "key", key)
-		return
+		res.Reason = "unknown command key"
+		return res
 	}
 	if err != nil {
 		r.log.Error("command failed", "vin", vin, "key", key, "err", err)
+		res.Outcome = OutcomeFailed
+		res.Reason = err.Error()
 	} else {
 		r.log.Info("command sent", "vin", vin, "key", key)
+		res.Outcome = OutcomeSent
+		res.Reason = ""
 	}
+	return res
 }
 
 // vehicleSummary is the subset of GET /api/1/vehicles/{vin} we consume.
