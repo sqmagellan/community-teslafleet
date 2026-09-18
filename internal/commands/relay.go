@@ -330,15 +330,31 @@ func (r *Relay) Handle(vin, key, payload string) (res Result) {
 		}
 		err = r.command(vin, "set_sentry_mode", map[string]any{"on": on})
 	case "climate_mode":
-		on, ok := onOff(payload)
-		if !ok {
-			bad("ON/OFF")
-			return
-		}
-		if on {
-			err = r.command(vin, "auto_conditioning_start", nil)
-		} else {
+		// Accept the vocabulary publisher.go ADVERTISES. It declares
+		// modes: ["off","heat_cool"] on mode_command_topic, so Home Assistant
+		// publishes the literal "heat_cool" -- a token onOff() does not know,
+		// because onOff only understands ON/OFF.
+		//
+		// e2be601 applied onOff() here uniformly while hardening every actuator's
+		// payload parsing. That was right for the lock and WRONG for this case: the
+		// pre-existing "anything that is not off means on" was correct for a mode
+		// whose two advertised values are off and heat_cool. The effect was that
+		// every climate.set_hvac_mode: heat_cool from HA was refused with
+		// "ignoring command with unrecognized payload ... expected=ON/OFF" and
+		// returned without sending anything -- HA showed the mode as set while no
+		// command reached the car. Measured 2026-09-16: 13 rejections, all
+		// payload=heat_cool.
+		//
+		// Strictness is kept: an unrecognized payload is still refused. ON/OFF is
+		// still accepted, so nothing that already worked regresses.
+		switch strings.ToLower(strings.TrimSpace(payload)) {
+		case "off":
 			err = r.command(vin, "auto_conditioning_stop", nil)
+		case "heat_cool", "on":
+			err = r.command(vin, "auto_conditioning_start", nil)
+		default:
+			bad("off/heat_cool")
+			return
 		}
 	case "steering_wheel_heater":
 		on, ok := onOff(payload)

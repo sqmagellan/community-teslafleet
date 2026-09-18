@@ -242,3 +242,57 @@ func TestHandleReportsSentWhenTheProxyAccepts(t *testing.T) {
 		t.Errorf("proxy saw %v, want flash_lights", sent)
 	}
 }
+
+// TestClimateModeAcceptsAdvertisedVocabulary is the regression test for e2be601.
+//
+// publisher.go advertises the climate mode vocabulary as
+//
+//	c["modes"]              = []string{"off", "heat_cool"}
+//	c["mode_command_topic"] = base + "/climate_mode/set"
+//
+// so Home Assistant publishes the literal string "heat_cool". e2be601 hardened every
+// actuator to validate its payload with onOff(), which only knows ON/OFF, so the
+// handler refused it:
+//
+//	level=WARN msg="ignoring command with unrecognized payload"
+//	           key=climate_mode payload=heat_cool expected=ON/OFF
+//
+// and returned without sending anything -- while HA went on displaying the mode as set.
+// 13 such rejections were on record before this was found.
+//
+// The test asserts BOTH directions, because a fix that simply widened the accepted set
+// would give back the property e2be601 was right to add.
+func TestClimateModeAcceptsAdvertisedVocabulary(t *testing.T) {
+	fastWake(t)
+	f := newFakeCar()
+	defer f.close()
+	// Online, to isolate payload parsing from the wake path.
+	f.awake.Store(true)
+
+	r := f.relay()
+
+	cases := []struct {
+		payload string
+		want    string
+	}{
+		{"heat_cool", "auto_conditioning_start"}, // what HA actually publishes
+		{"HEAT_COOL", "auto_conditioning_start"}, // case-insensitive, as before
+		{"on", "auto_conditioning_start"},        // ON/OFF still works: no regression
+		{"off", "auto_conditioning_stop"},
+	}
+	for _, c := range cases {
+		f.lastCommand.Store("")
+		r.Handle("VIN1", "climate_mode", c.payload)
+		if got := f.lastCommand.Load(); got != c.want {
+			t.Errorf("climate_mode payload %q issued %v, want %q", c.payload, got, c.want)
+		}
+	}
+
+	// A genuinely unknown payload must STILL be refused -- that is the property
+	// e2be601 added and this fix must not remove.
+	f.lastCommand.Store("")
+	r.Handle("VIN1", "climate_mode", "banana")
+	if got := f.lastCommand.Load(); got != "" {
+		t.Errorf("unknown payload %q issued %v; it must issue nothing", "banana", got)
+	}
+}
