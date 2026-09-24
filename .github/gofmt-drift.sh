@@ -59,8 +59,11 @@ for line in sys.stdin.read().splitlines():
         # matters is WHICH lines gofmt rewrites, not where they sit.
         drift[side].append("".join(line.split()))
 
+# Only lines gofmt would rewrite in the new file and not in the old one count.
+# Comparing the two sets for equality also failed a change that REMOVED drift.
 for f in sorted({name for _, name in drift}):
-    if sorted(drift.get(("new", f), [])) != sorted(drift.get(("old", f), [])):
+    added = collections.Counter(drift.get(("new", f), [])) - collections.Counter(drift.get(("old", f), []))
+    if added:
         print(f)
 ')
 
