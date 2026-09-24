@@ -51,4 +51,8 @@ schema:
   fleetapi_enabled: bool
   vins: str
   commands_enabled: bool
+  tesla_client_id: str?
+  tesla_client_secret: password?
+  tesla_refresh_token: password?
+  fleet_api_url: url?
   log_level: list(debug|info|warn|error)

@@ -4,6 +4,8 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"html/template"
 	"log/slog"
@@ -33,6 +35,9 @@ type Options struct {
 	ProxyURL   string // vehicle-command proxy (for enroll)
 	EnrollFile string // ftc.json path to POST on enroll
 	TokenCache string // where to persist the obtained refresh token (relay reads this)
+	CAFile     string // certificate chain for the telemetry server, used when none is pasted
+	// DefaultProfile preselects the enrollment profile until one is saved.
+	DefaultProfile string
 
 	// Tokens, when non-nil, is the single owner of the OAuth credential -- the
 	// command relay. Tesla rotates the refresh token on every use, so the wizard
@@ -56,6 +61,7 @@ type TokenOwner interface {
 type State struct {
 	Domain      string         `json:"domain"`
 	ClientID    string         `json:"client_id"`
+	FleetAPI    string         `json:"fleet_api,omitempty"`
 	HasKeys     bool           `json:"has_keys"`
 	SecretSet   bool           `json:"secret_set"`
 	PartnerDone bool           `json:"partner_done"`
@@ -147,8 +153,18 @@ func NewServer(opts Options, log *slog.Logger) (*Server, error) {
 
 // client builds a Tesla API client from config + the wizard's stored creds.
 func (s *Server) client() *teslaClient {
-	return newTeslaClient(s.opts.AuthHost, s.opts.AuthPath, s.opts.FleetAPI,
+	return newTeslaClient(s.opts.AuthHost, s.opts.AuthPath, s.fleetAPI(),
 		s.store.st.ClientID, s.store.clientSecret())
+}
+
+// fleetAPI is the regional Fleet API base entered in step 1, falling back to
+// commands.fleet_api_url. The add-on had no way to set the latter, so step 4
+// could never pass there (upstream issue #3).
+func (s *Server) fleetAPI() string {
+	if s.store.st.FleetAPI != "" {
+		return s.store.st.FleetAPI
+	}
+	return s.opts.FleetAPI
 }
 
 func (s *Server) Handler() http.Handler {
@@ -196,6 +212,27 @@ func (s *Server) WellKnownHandler() http.Handler {
 // that path keeps working; a standalone listener on :8099 no longer serves the
 // LAN unless a password is set.
 func (s *Server) auth(next http.Handler) http.Handler {
+	return s.sameSite(s.login(next))
+}
+
+// sameSite refuses a state-changing request that a browser marks as coming
+// from another site. Without it, any page the operator visits could post a
+// form here: the browser attaches cached Basic Auth credentials, and the
+// loopback rule does not help when the browser runs on the same host.
+// Requests without the header (curl, older clients) are let through.
+func (s *Server) sameSite(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead &&
+			r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			s.log.Warn("rejected cross-site onboarding request", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
+			http.Error(w, "forbidden: cross-site request", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) login(next http.Handler) http.Handler {
 	if s.opts.Password == "" {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -224,6 +261,7 @@ type view struct {
 	Base       string
 	State      State
 	PairingURL string
+	Profile    string // saved profile, else the default
 	Profiles   []string
 	Estimate   enroll.Estimate
 }
@@ -239,8 +277,12 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, notice string) {
 	}
 	prof := st.Profile
 	if prof == "" {
+		prof = s.opts.DefaultProfile
+	}
+	if prof == "" {
 		prof = "balanced"
 	}
+	v.Profile = prof
 	v.Estimate = enroll.EstimateCost(enroll.Generate(prof, st.Domain, st.Port))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "index.html", v); err != nil {
@@ -258,6 +300,9 @@ func (s *Server) saveDomain(w http.ResponseWriter, r *http.Request) {
 	s.store.mu.Lock()
 	s.store.st.Domain = strings.TrimSpace(r.FormValue("domain"))
 	s.store.st.ClientID = strings.TrimSpace(r.FormValue("client_id"))
+	if api := strings.TrimRight(strings.TrimSpace(r.FormValue("fleet_api")), "/"); api != "" {
+		s.store.st.FleetAPI = api
+	}
 	if sec := strings.TrimSpace(r.FormValue("client_secret")); sec != "" {
 		if err := s.store.saveSecret(sec); err == nil {
 			s.store.st.SecretSet = true
@@ -270,6 +315,11 @@ func (s *Server) saveDomain(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 	s.store.mu.Lock()
+	if s.store.st.HasKeys && r.FormValue("confirm") != "replace" {
+		s.store.mu.Unlock()
+		s.render(w, r, "✗ A keypair already exists, and every paired car trusts it. A new one means pairing every car again. Tick the box to confirm.")
+		return
+	}
 	err := s.store.generateKeys()
 	s.store.mu.Unlock()
 	if err != nil {
@@ -313,7 +363,7 @@ func (s *Server) registerPartner(w http.ResponseWriter, r *http.Request) {
 	s.store.mu.Lock()
 	domain, clientID := s.store.st.Domain, s.store.st.ClientID
 	s.store.mu.Unlock()
-	if domain == "" || clientID == "" || s.store.clientSecret() == "" || s.opts.FleetAPI == "" {
+	if domain == "" || clientID == "" || s.store.clientSecret() == "" || s.fleetAPI() == "" {
 		s.render(w, r, "✗ Need domain, client_id, client_secret and a Fleet API URL first.")
 		return
 	}
@@ -386,6 +436,12 @@ func (s *Server) saveEnrollment(w http.ResponseWriter, r *http.Request) {
 	s.store.mu.Unlock()
 
 	ftc := enroll.Generate(profile, domain, port)
+	ca, err := s.chain(r.FormValue("ca"))
+	if err != nil {
+		s.render(w, r, "✗ "+err.Error())
+		return
+	}
+	ftc.CA = ca
 	b, err := json.MarshalIndent(ftc, "", "  ")
 	if err != nil {
 		s.render(w, r, "✗ Could not build config: "+err.Error())
@@ -405,16 +461,56 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "✗ No enrollment file at "+s.opts.EnrollFile+" — set intervals on the Enrollment page first.")
 		return
 	}
+	if !enroll.HasCA(payload) {
+		s.render(w, r, "✗ The saved config has no certificate chain (ca). Tesla rejects it without one. Paste the chain on the Enrollment step and save again.")
+		return
+	}
+	s.store.mu.Lock()
+	vins := make([]string, 0, len(s.store.st.Vehicles))
+	for _, v := range s.store.st.Vehicles {
+		vins = append(vins, v.VIN)
+	}
+	s.store.mu.Unlock()
+	body, err := enroll.Wrap(payload, vins)
+	if errors.Is(err, enroll.ErrNoVINs) {
+		s.render(w, r, "✗ No cars to enroll. Run \"List vehicles\" in step 6 first.")
+		return
+	}
+	if err != nil {
+		s.render(w, r, "✗ "+err.Error())
+		return
+	}
 	at, err := s.accessToken()
 	if err != nil {
 		s.render(w, r, "✗ Token refresh failed: "+err.Error())
 		return
 	}
-	if err := postEnroll(s.opts.ProxyURL, at, payload); err != nil {
+	if err := postEnroll(s.opts.ProxyURL, at, body); err != nil {
 		s.render(w, r, "✗ Enroll failed: "+err.Error())
 		return
 	}
 	s.render(w, r, "✓ Telemetry config sent. The car adopts it within a minute (poll synced).")
+}
+
+// chain returns the certificate chain for the enrollment config: the pasted
+// PEM if there is one, else the file in Options.CAFile. Empty is allowed here
+// so a config can still be saved; enroll refuses it later.
+func (s *Server) chain(pasted string) (string, error) {
+	pemText := strings.TrimSpace(pasted)
+	if pemText == "" && s.opts.CAFile != "" {
+		b, err := os.ReadFile(s.opts.CAFile)
+		if err != nil {
+			return "", fmt.Errorf("could not read the certificate chain at %s: %w", s.opts.CAFile, err)
+		}
+		pemText = strings.TrimSpace(string(b))
+	}
+	if pemText == "" {
+		return "", nil
+	}
+	if b, _ := pem.Decode([]byte(pemText)); b == nil || b.Type != "CERTIFICATE" {
+		return "", fmt.Errorf("the certificate chain is not PEM (expected -----BEGIN CERTIFICATE-----)")
+	}
+	return pemText + "\n", nil
 }
 
 // accessToken mints an access token from the saved refresh token.

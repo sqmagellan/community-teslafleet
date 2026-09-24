@@ -24,6 +24,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/LasseLegarth/community-teslafleet/internal/config"
+	"github.com/LasseLegarth/community-teslafleet/internal/enroll"
 	"github.com/LasseLegarth/community-teslafleet/internal/store"
 )
 
@@ -969,38 +970,13 @@ func (r *Relay) vinList() []string {
 	return out
 }
 
-// enrollBody wraps a bare fleet_telemetry_config in the envelope Tesla's
-// vehicle-command proxy actually expects:
-//
-//	{"vins": ["..."], "config": {...}}
-//
-// Posting the bare config is not merely rejected — the proxy unmarshals into
-// `struct{ VINs []string; Config jwt.MapClaims }`, gets a nil Config, and hands
-// that nil map to SignMessage, which assigns into it and PANICS
-// (pkg/proxy/proxy.go handleFleetTelemetryConfig -> internal/authentication/jwt.go).
-// The connection dies mid-response, so the only symptom on this side is an
-// unexplained `EOF` with nothing in any log but the proxy's stack trace.
-//
-// An already-wrapped payload is passed through, so a config captured from the
-// Tesla docs works unchanged.
+// enrollBody is enroll.Wrap with a relay-specific message for the no-VIN case.
 func enrollBody(payload []byte, vins []string) ([]byte, error) {
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &probe); err != nil {
-		return nil, fmt.Errorf("parse fleet_telemetry_config: %w", err)
-	}
-	if _, wrapped := probe["config"]; wrapped {
-		return payload, nil
-	}
-	if len(probe["fields"]) == 0 {
-		return nil, fmt.Errorf("fleet_telemetry_config has no fields")
-	}
-	if len(vins) == 0 {
+	b, err := enroll.Wrap(payload, vins)
+	if errors.Is(err, enroll.ErrNoVINs) {
 		return nil, fmt.Errorf("enroll needs an explicit VIN list: set vehicles/TGW_VINS")
 	}
-	return json.Marshal(map[string]any{
-		"vins":   vins,
-		"config": json.RawMessage(payload),
-	})
+	return b, err
 }
 
 func (r *Relay) post(urlStr string, body map[string]any) error {

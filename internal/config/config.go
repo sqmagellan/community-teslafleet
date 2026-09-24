@@ -98,6 +98,14 @@ type Onboard struct {
 	// /.well-known/appspecific/com.tesla.3p.public-key.pem so the user can route their
 	// domain here instead of hosting the file by hand. Tesla fetches it over HTTPS.
 	WellKnownListen string `yaml:"well_known_listen"` // e.g. :8098
+	// DefaultProfile preselects the wizard's telemetry profile (eco, balanced,
+	// live). The add-on's telemetry_profile option sets it; "custom" leaves the
+	// wizard's own choice alone.
+	DefaultProfile string `yaml:"default_profile"`
+	// CAFile is the certificate chain the car is told to trust for the
+	// telemetry server. Tesla rejects a fleet_telemetry_config without one.
+	// Defaults to stream.tls_cert when that is set.
+	CAFile string `yaml:"ca_file"`
 }
 
 // Recording appends every telemetry field update to a JSONL file for debugging
@@ -404,6 +412,8 @@ func (cfg Config) Redact() Config {
 	cfg.Commands.ValetPIN = mask(cfg.Commands.ValetPIN)
 	cfg.Commands.SpeedLimitPIN = mask(cfg.Commands.SpeedLimitPIN)
 	cfg.Commands.PinToDrivePIN = mask(cfg.Commands.PinToDrivePIN)
+	cfg.Onboard.Password = mask(cfg.Onboard.Password)
+	cfg.Debug.Token = mask(cfg.Debug.Token)
 	return cfg
 }
 
@@ -422,6 +432,8 @@ func MergeSecrets(in *Config, existing Config) {
 	keep(&in.Commands.ValetPIN, existing.Commands.ValetPIN)
 	keep(&in.Commands.SpeedLimitPIN, existing.Commands.SpeedLimitPIN)
 	keep(&in.Commands.PinToDrivePIN, existing.Commands.PinToDrivePIN)
+	keep(&in.Onboard.Password, existing.Onboard.Password)
+	keep(&in.Debug.Token, existing.Debug.Token)
 }
 
 // migrate upgrades an older config in place. No migrations yet; stamps the version.
@@ -465,6 +477,9 @@ func applyOptions(c *Config) {
 	optStr(o, "tesla_client_secret", &c.Commands.ClientSecret)
 	optStr(o, "tesla_refresh_token", &c.Commands.RefreshToken)
 	optStr(o, "fleet_api_url", &c.Commands.FleetAPIURL)
+	if v, ok := o["telemetry_profile"].(string); ok && v != "" && v != "custom" {
+		c.Onboard.DefaultProfile = v
+	}
 	if v, ok := o["vins"].(string); ok && strings.TrimSpace(v) != "" && len(c.Vehicles) == 0 {
 		c.Vehicles = parseVINs(v, "")
 	}
@@ -538,6 +553,8 @@ func applyEnv(c *Config) {
 	setStr(&c.Onboard.Password, "TGW_ONBOARD_PASSWORD")
 	setStr(&c.Onboard.DataDir, "TGW_ONBOARD_DATA_DIR")
 	setStr(&c.Onboard.WellKnownListen, "TGW_ONBOARD_WELLKNOWN_LISTEN")
+	setStr(&c.Onboard.DefaultProfile, "TGW_ONBOARD_DEFAULT_PROFILE")
+	setStr(&c.Onboard.CAFile, "TGW_ONBOARD_CA_FILE")
 	setBool(&c.Stream.Embedded, "TGW_STREAM_EMBEDDED")
 	setStr(&c.Stream.FleetTelemetryBin, "TGW_STREAM_FLEET_TELEMETRY_BIN")
 	setStr(&c.Stream.FleetTelemetryConfig, "TGW_STREAM_FLEET_TELEMETRY_CONFIG")

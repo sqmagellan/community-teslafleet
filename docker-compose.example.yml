@@ -7,11 +7,15 @@
 
 services:
   gateway:
-    image: ghcr.io/lasselegarth/community-teslafleet:latest
-    # build: .          # uncomment to build locally instead of pulling
+    # This fork publishes no image. ghcr.io/lasselegarth/community-teslafleet is
+    # upstream's, which lacks the fixes listed in FORK.md, so build this tree.
+    build: .
     restart: unless-stopped
     ports:
-      - "4460:4460"      # Fleet API emulator (TeslaMate polls this)
+      # Fleet API + WebSocket for TeslaMate. No authentication, and it serves
+      # live GPS, so bind it to loopback. Use "4460:4460" only if TeslaMate
+      # runs on another host, and then keep the port off the internet.
+      - "127.0.0.1:4460:4460"
     environment:
       - TGW_INGEST_ZMQ_ADDR=tcp://fleet-telemetry:5284
       - TGW_INGEST_NAMESPACE=tesla_telemetry

@@ -9,7 +9,7 @@
 # so buildx selects the matching binary per target.
 
 # --- our gateway (static, no cgo: go-zeromq/zmq4 is pure Go) ---
-FROM golang:1.25-alpine AS build
+FROM golang:1.26.6-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

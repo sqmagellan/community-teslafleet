@@ -71,7 +71,7 @@ func (s *Server) Routes() chi.Router {
 	// telemetry configuration, so it does not belong on the auth-less TeslaMate
 	// router. Same gate and same token as /debug.
 	r.Post("/admin/enroll", func(w http.ResponseWriter, r *http.Request) {
-		if !s.debugAllowed(w, r) {
+		if !s.tokenRequired(w, r) {
 			return
 		}
 		s.handleEnroll(w, r)
@@ -325,7 +325,7 @@ func (s *Server) handleTelemetryConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpstreamVehicleData(w http.ResponseWriter, r *http.Request) {
-	if !s.debugAllowed(w, r) {
+	if !s.tokenRequired(w, r) {
 		return
 	}
 	if s.relay == nil {
@@ -392,6 +392,19 @@ func (s *Server) debugAllowed(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
+}
+
+// tokenRequired is debugAllowed for the two endpoints that spend money or
+// change a car: /admin/enroll and /debug/upstream. An empty token opens
+// /debug/state on purpose (fine behind a loopback bind), but it must not open
+// these: anything that can reach the port could run them in a loop.
+func (s *Server) tokenRequired(w http.ResponseWriter, r *http.Request) bool {
+	if s.cfg.Debug.StateEnabled && s.cfg.Debug.Token == "" {
+		s.log.Warn("refused a billable endpoint: debug.token is not set", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
+		http.Error(w, "set debug.token (TGW_DEBUG_TOKEN) to use this endpoint", http.StatusForbidden)
+		return false
+	}
+	return s.debugAllowed(w, r)
 }
 
 func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {

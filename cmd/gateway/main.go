@@ -230,6 +230,12 @@ func main() {
 			ProxyURL:   cfg.Commands.ProxyURL,
 			EnrollFile: cfg.Commands.EnrollFile,
 			TokenCache: cfg.Commands.TokenCache,
+			CAFile:     cfg.Onboard.CAFile,
+
+			DefaultProfile: cfg.Onboard.DefaultProfile,
+		}
+		if obOpts.CAFile == "" {
+			obOpts.CAFile = cfg.Stream.TLSCert
 		}
 		// One owner for the rotating credential. With the relay up, the wizard
 		// refreshes through it instead of alongside it, and a pasted token takes

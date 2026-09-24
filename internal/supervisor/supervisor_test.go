@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,5 +63,18 @@ func TestSupervisor_GracefulStop(t *testing.T) {
 	case <-done:
 	case <-time.After(termGrace + 3*time.Second):
 		t.Fatal("supervisor did not stop the process within the grace period")
+	}
+}
+
+func TestChildEnvDropsGatewaySecrets(t *testing.T) {
+	got := childEnv([]string{
+		"PATH=/usr/bin",
+		"TGW_TESLA_CLIENT_SECRET=s",
+		"TGW_TESLA_REFRESH_TOKEN=r",
+		"SUPERVISOR_TOKEN=x",
+		"TZ=UTC",
+	})
+	if strings.Join(got, " ") != "PATH=/usr/bin TZ=UTC" {
+		t.Errorf("child env = %v", got)
 	}
 }

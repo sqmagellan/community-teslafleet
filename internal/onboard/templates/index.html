@@ -11,7 +11,7 @@
   .done{border-color:#2e7d32;background:#f4fbf4}
   .badge{font-size:.78rem;padding:.1rem .5rem;border-radius:99px;background:#eee;margin-left:.4rem}
   .badge.ok{background:#2e7d32;color:#fff} .badge.todo{background:#bbb;color:#fff}
-  input{padding:.45rem;border:1px solid #ccc;border-radius:6px;width:100%;box-sizing:border-box;margin:.2rem 0 .6rem}
+  input,textarea{padding:.45rem;border:1px solid #ccc;border-radius:6px;width:100%;box-sizing:border-box;margin:.2rem 0 .6rem}
   button{padding:.5rem .9rem;border:0;border-radius:6px;background:#1565c0;color:#fff;cursor:pointer}
   button.sec{background:#555} code{background:#f3f3f3;padding:.1rem .3rem;border-radius:4px}
   pre{background:#f6f8fa;padding:.7rem;border-radius:8px;overflow:auto;font-size:.8rem}
@@ -40,6 +40,8 @@ site / phone (clearly marked).</p>
     <input name="client_id" value="{{.State.ClientID}}" placeholder="xxxxxxxx-....">
     <label>Client Secret {{if .State.SecretSet}}<span class="muted">(stored — leave blank to keep)</span>{{end}}</label>
     <input name="client_secret" type="password" placeholder="••••••••">
+    <label>Fleet API base for your region</label>
+    <input name="fleet_api" value="{{.State.FleetAPI}}" placeholder="https://fleet-api.prd.na.vn.cloud.tesla.com">
     <button type="submit">Save</button>
   </form>
 </div>
@@ -51,6 +53,8 @@ site / phone (clearly marked).</p>
   <p class="muted">Generates a P-256 keypair. The private key signs commands (used by the
   vehicle-command proxy); the public key is published at the well-known path.</p>
   <form method="post" action="{{.Base}}/generate">
+    {{if .State.HasKeys}}<label><input type="checkbox" name="confirm" value="replace" style="width:auto">
+    Replace the existing key (every car must be paired again)</label>{{end}}
     <button type="submit">{{if .State.HasKeys}}Regenerate{{else}}Generate keypair{{end}}</button>
   </form>
 </div>
@@ -120,10 +124,14 @@ site / phone (clearly marked).</p>
   <form method="post" action="{{.Base}}/enrollment">
     <label>Profile</label>
     <select name="profile">
-      {{$cur := .State.Profile}}{{range .Profiles}}<option value="{{.}}" {{if eq . $cur}}selected{{end}}>{{.}}</option>{{end}}
+      {{$cur := .Profile}}{{range .Profiles}}<option value="{{.}}" {{if eq . $cur}}selected{{end}}>{{.}}</option>{{end}}
     </select>
     <label>Telemetry port</label>
     <input name="port" value="{{if .State.Port}}{{.State.Port}}{{else}}443{{end}}" placeholder="443">
+    <label>Certificate chain of the telemetry server (PEM, leaf first). Tesla requires it,
+    even for a Let's Encrypt certificate. Paste the whole fullchain.pem. Leave blank to use
+    the configured file.</label>
+    <textarea name="ca" rows="4" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
     <button type="submit">Generate &amp; save config</button>
   </form>
   <p class="muted">Estimate (current selection): ~{{.Estimate.SignalsLow}}–{{.Estimate.SignalsHigh}}

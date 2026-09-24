@@ -141,9 +141,14 @@ func TestRedactAndMergeSecrets(t *testing.T) {
 	c := Defaults()
 	c.Commands.ClientSecret = "supersecret"
 	c.HA.Password = "pw"
+	c.Onboard.Password = "wizard-pw"
+	c.Debug.Token = "debug-tok"
 	r := c.Redact()
 	if r.Commands.ClientSecret != secretMask || r.HA.Password != secretMask {
 		t.Errorf("Redact did not mask: %+v", r.Commands)
+	}
+	if r.Onboard.Password != secretMask || r.Debug.Token != secretMask {
+		t.Errorf("Redact left the wizard password or debug token visible: %q %q", r.Onboard.Password, r.Debug.Token)
 	}
 	if c.Commands.ClientSecret != "supersecret" {
 		t.Errorf("Redact mutated original")

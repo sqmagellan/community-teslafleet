@@ -31,11 +31,12 @@ configuration:
   telemetry_profile:
     name: Streaming frequency
     description: >-
-      How often the car sends each signal — a trade-off between freshness and
-      Tesla's billed signal count (you get ~$10/month free credit, enough for
-      most setups). eco = slowest, cheapest. balanced (recommended) = good
-      live feel within the free tier. live = near-real-time, more signals.
-      custom = use your own ftc.json from the onboarding wizard.
+      The profile the onboarding wizard's Enrollment step starts with. It
+      takes effect when you save and enroll from the wizard; changing it here
+      does not re-enroll the car. eco = slowest, cheapest. balanced
+      (recommended) = good live feel within Tesla's free monthly credit.
+      live = near-real-time, more signals. custom = leave the wizard's own
+      choice alone.
   fleetapi_enabled:
     name: Serve TeslaMate (Fleet API)
     description: >-
@@ -56,8 +57,33 @@ configuration:
     description: >-
       Turn ON to control the car FROM Home Assistant (charging, climate,
       locks, frunk/trunk, etc.). Requires completing the onboarding wizard
-      (Tesla token + virtual-key pairing) first. Leave OFF for read-only /
-      data-only — safe default for a first test.
+      (Tesla token + virtual-key pairing) first, and the Tesla client ID
+      below. Leave OFF for read-only / data-only, the safe default for a
+      first test.
+  tesla_client_id:
+    name: Tesla client ID
+    description: >-
+      The client ID of your app on developer.tesla.com. Required when
+      commands are on.
+  tesla_client_secret:
+    name: Tesla client secret
+    description: >-
+      The client secret of the same app. Partner registration needs it, and
+      token refreshes send it when it is set.
+  tesla_refresh_token:
+    name: Tesla refresh token (first start only)
+    description: >-
+      Only needed if you have not pasted a token in the onboarding wizard.
+      Tesla replaces the token on every use and the gateway keeps the
+      current one in /data, so this value goes stale after the first start.
+      You can clear it once commands work.
+  fleet_api_url:
+    name: Fleet API URL
+    description: >-
+      Tesla's Fleet API base for your region, for example
+      https://fleet-api.prd.na.vn.cloud.tesla.com (North America) or
+      https://fleet-api.prd.eu.vn.cloud.tesla.com (Europe). Needed for
+      partner registration in the wizard and for the Navigate entity.
   log_level:
     name: Log verbosity
     description: >-

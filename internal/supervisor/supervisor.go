@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -99,7 +100,7 @@ func (s *Supervisor) supervise(ctx context.Context, p Process) {
 // exit. On ctx cancellation it sends SIGTERM and, after a grace period, SIGKILL.
 func (s *Supervisor) runOnce(ctx context.Context, p Process) error {
 	cmd := exec.Command(p.Path, p.Args...)
-	cmd.Env = append(os.Environ(), p.Env...)
+	cmd.Env = append(childEnv(os.Environ()), p.Env...)
 	cmd.Dir = p.Dir
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -132,6 +133,22 @@ func (s *Supervisor) runOnce(ctx context.Context, p Process) error {
 		outWG.Wait()
 		return err
 	}
+}
+
+// childEnv drops the gateway's own settings before a child sees the
+// environment. TGW_* can carry the Tesla client secret, the refresh token, the
+// MQTT password and the debug token, and neither fleet-telemetry nor the
+// command proxy needs any of them. SUPERVISOR_TOKEN is the HA add-on's API
+// credential and goes too.
+func childEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "TGW_") || strings.HasPrefix(kv, "SUPERVISOR_TOKEN=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // terminate asks the process to stop (SIGTERM) and force-kills it if it overstays

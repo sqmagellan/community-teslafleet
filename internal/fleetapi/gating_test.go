@@ -72,6 +72,23 @@ func TestAdminEnroll_Gated(t *testing.T) {
 		}
 	})
 
+	t.Run("403 when debug is on but no token is configured", func(t *testing.T) {
+		cfg := *base
+		cfg.Debug = config.Debug{StateEnabled: true}
+		srv := NewServer(st, &cfg, nil, nil, "", log)
+		for _, path := range []string{"/admin/enroll", "/debug/upstream/" + vinA} {
+			method := http.MethodGet
+			if path == "/admin/enroll" {
+				method = http.MethodPost
+			}
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("%s: code = %d, want 403", path, rec.Code)
+			}
+		}
+	})
+
 	t.Run("403 without the token", func(t *testing.T) {
 		cfg := *base
 		cfg.Debug = config.Debug{StateEnabled: true, Token: "s3cret"}

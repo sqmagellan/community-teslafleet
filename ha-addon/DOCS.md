@@ -28,10 +28,13 @@ pairing, and enrollment. HA's MQTT broker is **auto-detected** from the Supervis
 | `units_system` | `metric` (km/°C/bar) or `imperial` (mi/°F/psi), how HA displays units |
 | `device_identifier` | `name` (slug, keeps the VIN out of entity_ids) or `vin` |
 | `telemetry_port` | port the car connects to (port-forward this, or tunnel to it). Default `4443` |
-| `telemetry_profile` | `eco` / `balanced` / `live` / `custom`, how often signals are sent |
+| `telemetry_profile` | `eco` / `balanced` / `live` / `custom`. Preselects the wizard's enrollment profile; it does not re-enroll by itself |
 | `fleetapi_enabled` | `true` only if you also run TeslaMate |
 | `vins` | **optional**, leave empty to auto-discover your car(s); set to filter to specific VINs |
-| `commands_enabled` | enable HA-to-car commands (starts the bundled proxy; needs onboarding) |
+| `commands_enabled` | enable HA-to-car commands (starts the bundled proxy; needs onboarding and `tesla_client_id`) |
+| `tesla_client_id` / `tesla_client_secret` | your developer.tesla.com app credentials |
+| `tesla_refresh_token` | only for the first start if you did not paste a token in the wizard |
+| `fleet_api_url` | Fleet API base for your region, e.g. `https://fleet-api.prd.na.vn.cloud.tesla.com` |
 | `log_level` | debug / info / warn / error |
 
 ## Ports
