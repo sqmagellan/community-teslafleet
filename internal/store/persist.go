@@ -82,8 +82,15 @@ func (s *Store) Load(path string) (int, error) {
 		}
 		v.mu.Lock()
 		for name, fv := range pv.Fields {
+			// A gear other than P is only true while the car is streaming. HA
+			// and TeslaMate read the field directly, so a restored D would
+			// show a parked car in gear until its next drive.
+			if name == FieldGear && GearString(fv.Value) != "P" {
+				continue
+			}
 			v.fields[name] = fv
 		}
+		v.restored = len(pv.Fields) > 0
 		// Restore LastV/connectivity so Derive still reports the car as
 		// asleep/offline after a restart (the timestamps are old on purpose).
 		//

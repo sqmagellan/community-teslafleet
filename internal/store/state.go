@@ -19,7 +19,14 @@ type Derived struct {
 // With Sentry on, the car stays online forever — that is fine, polling the
 // emulator is free. report_asleep_when_idle lets TeslaMate still log sleep.
 func Derive(s Snapshot, cfg config.State, now time.Time) Derived {
-	d := Derived{Driving: isDriving(s), Charging: isCharging(s)}
+	d := Derived{}
+	// A restored Gear D or DetailedChargeState Charging is what the car was
+	// doing when the last process stopped. If the car fell asleep during the
+	// downtime it never sends the update, so trusting those values would pin it
+	// driving or charging, and online, until its next drive.
+	if !s.Restored {
+		d.Driving, d.Charging = isDriving(s), isCharging(s)
+	}
 
 	grace := time.Duration(cfg.OnlineGraceSeconds) * time.Second
 	stale := time.Duration(cfg.StaleAfterSeconds) * time.Second

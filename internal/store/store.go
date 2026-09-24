@@ -85,11 +85,16 @@ type Snapshot struct {
 	Connectivity string
 	ConnAt       time.Time
 	LastV        time.Time
+	// Restored is true while every field came from the state file and the car
+	// has sent nothing since this process started.
+	Restored bool
 }
 
+// Field returns a field's value. A field the car last reported as invalid
+// (stored as a nil Value) counts as absent.
 func (s Snapshot) Field(name string) (FieldValue, bool) {
 	fv, ok := s.Fields[name]
-	return fv, ok
+	return fv, ok && fv.Value != nil
 }
 
 // Num returns a numeric field value as float64.
@@ -221,6 +226,7 @@ type vehicle struct {
 	connectivity string
 	connAt       time.Time
 	lastV        time.Time
+	restored     bool
 }
 
 // Store is the concurrency-safe in-memory state of all known vehicles.
@@ -290,6 +296,7 @@ func (s *Store) SetField(vin, field string, value any) {
 	v.mu.Lock()
 	v.fields[field] = FieldValue{Value: value, UpdatedAt: now, Count: v.fields[field].Count + 1}
 	v.lastV = now
+	v.restored = false
 	v.mu.Unlock()
 }
 
@@ -327,6 +334,7 @@ func (s *Store) Snapshot(vin string) (Snapshot, bool) {
 		Connectivity: v.connectivity,
 		ConnAt:       v.connAt,
 		LastV:        v.lastV,
+		Restored:     v.restored,
 	}, true
 }
 

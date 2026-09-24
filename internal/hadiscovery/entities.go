@@ -251,9 +251,11 @@ func catalog(units config.Units) []entity {
 // must match catalog entity keys plus device_tracker attribute fields.
 func buildState(snap store.Snapshot, d store.Derived, units config.Units) map[string]any {
 	sys := units.System
+	// "online" follows the State sensor. It used to be true for anything but
+	// offline, so a sleeping car showed as online.
 	s := map[string]any{
 		"state":    d.State,
-		"online":   d.State != "offline",
+		"online":   d.State == "online",
 		"charging": d.Charging,
 	}
 

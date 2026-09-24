@@ -341,10 +341,14 @@ func (c *Consumer) handleConnectivity(payload []byte) {
 // extractValue pulls the single variant out of a protojson Value object.
 // Scalars come back as float64/string/bool; Location comes back as a
 // map[string]any{latitude,longitude}; enum variants come back as their name string.
+//
+// An "invalid" variant returns (nil, true). The car sends it when a value
+// stops existing (a route after navigation ends, a sensor that drops out), so
+// the field has to be cleared. Skipping it kept the last good value forever.
 func extractValue(m map[string]json.RawMessage) (any, bool) {
 	for k, raw := range m {
 		if k == "invalid" {
-			return nil, false
+			return nil, true
 		}
 		var v any
 		if err := json.Unmarshal(raw, &v); err != nil {

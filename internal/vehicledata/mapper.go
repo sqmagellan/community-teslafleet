@@ -237,8 +237,12 @@ func chargingState(snap store.Snapshot, d store.Derived) string {
 // PackVoltage/PackCurrent must be enrolled in the telemetry field set for this
 // to produce anything; without them power stays 0, as it did before.
 func drivePower(snap store.Snapshot, d store.Derived) int {
-	if p, ok := snap.ChargerPower(); ok && p > 0 {
-		return -int(p)
+	// Only while charging: DCChargingPower keeps a small residual after a
+	// session, and counting it here zeroed the power of every later drive.
+	if d.Charging {
+		if p, ok := snap.ChargerPower(); ok && p > 0 {
+			return -int(p)
+		}
 	}
 	if d.Driving {
 		if kw, ok := PackPowerKW(snap); ok {

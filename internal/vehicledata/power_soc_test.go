@@ -126,4 +126,15 @@ func TestDrivePower_SignConvention(t *testing.T) {
 	if got := drivePower(charging, store.Derived{Charging: true}); got != -11 {
 		t.Errorf("charging power = %d, want -11", got)
 	}
+	// DCChargingPower keeps a residual after a fast-charge session. It must not
+	// hide the pack power of the next drive.
+	afterDC := store.Snapshot{Fields: map[string]store.FieldValue{
+		store.FieldPackVoltage:     {Value: 400.0},
+		store.FieldPackCurrent:     {Value: -25.0},
+		store.FieldDCChargingPower: {Value: 0.099},
+		store.FieldACChargingPower: {Value: 0.0},
+	}}
+	if got := drivePower(afterDC, store.Derived{Driving: true}); got != 10 {
+		t.Errorf("driving power after a DC session = %d, want +10", got)
+	}
 }
