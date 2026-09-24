@@ -157,7 +157,7 @@ func TestGenericDiscoveryConfig(t *testing.T) {
 		t.Errorf("generic entity should be diagnostic, got %v", c["entity_category"])
 	}
 	tpl, _ := c["value_template"].(string)
-	if tpl != "{{ value_json.DiStatorTempF | default('') }}" {
+	if tpl != "{{ value_json.DiStatorTempF | default(none) }}" {
 		t.Errorf("value_template = %q", tpl)
 	}
 

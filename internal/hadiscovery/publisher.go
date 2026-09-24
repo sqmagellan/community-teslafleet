@@ -423,7 +423,8 @@ func (p *Publisher) genericDiscoveryConfig(v config.Vehicle, field string, val a
 		c["value_template"] = fmt.Sprintf("{{ 'true' if value_json.%s | default(false) else 'false' }}", field)
 		return "binary_sensor", c
 	}
-	c["value_template"] = fmt.Sprintf("{{ value_json.%s | default('') }}", field)
+	// none, not '': see valueTemplate.
+	c["value_template"] = fmt.Sprintf("{{ value_json.%s | default(none) }}", field)
 	if dc, unit := genericClassUnit(field); dc != "" {
 		c["device_class"] = dc
 		if unit != "" {
@@ -699,20 +700,14 @@ func (p *Publisher) valueTemplate(e entity) string {
 	if e.ValueTmpl != "" {
 		return e.ValueTmpl
 	}
-	// An absent key must render as something HA accepts for this entity type.
+	// An absent key renders as the Jinja literal none, which HA shows as
+	// "unknown" for any sensor.
 	//
-	// For device_class "enum", the empty string is NOT a member of the declared
-	// options list, so HA rejects it and logs
-	//   Ignoring invalid option ... got ''
-	// on EVERY message. With two parked cars that was ~86k warning lines/day.
-	// Rendering the Jinja literal none yields state "unknown", which HA accepts
-	// for any entity regardless of options.
-	//
-	// For every other device_class the empty string is the correct "no value"
-	// rendering, so keep it: switching those to none would change published
-	// payloads for entities that are working today.
-	if e.DeviceClass == "enum" {
-		return fmt.Sprintf("{{ value_json.%s | default(none) }}", e.Key)
-	}
-	return fmt.Sprintf("{{ value_json.%s | default('') }}", e.Key)
+	// It used to be the empty string for everything except enums. HA ignores
+	// an empty state for a numeric sensor and keeps the previous one, so a
+	// value the car stopped reporting (or marked invalid) stayed on screen
+	// indefinitely. For an enum the empty string is also not a declared
+	// option, and HA logged "Ignoring invalid option ... got ''" on every
+	// message (~86k lines a day with two parked cars).
+	return fmt.Sprintf("{{ value_json.%s | default(none) }}", e.Key)
 }

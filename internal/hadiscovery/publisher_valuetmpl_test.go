@@ -2,11 +2,10 @@ package hadiscovery
 
 import "testing"
 
-// An enum sensor whose key is absent from the payload must render as the Jinja
-// literal none (-> HA "unknown"), never as the empty string: HA validates enum
-// state against the declared options list and logs a warning per message when a
-// value is not a member. See valueTemplate.
-func TestValueTemplateEnumRendersNone(t *testing.T) {
+// A sensor whose key is absent from the payload must render as the Jinja literal
+// none (-> HA "unknown"), never as the empty string. HA keeps the old state of a
+// numeric sensor on an empty one, and rejects it for an enum. See valueTemplate.
+func TestValueTemplateAbsentKeyRendersNone(t *testing.T) {
 	p := &Publisher{}
 	tests := []struct {
 		name string
@@ -19,14 +18,14 @@ func TestValueTemplateEnumRendersNone(t *testing.T) {
 			want: "{{ value_json.detailed_charge_state | default(none) }}",
 		},
 		{
-			name: "non-enum keeps empty string",
+			name: "numeric uses none",
 			e:    entity{Key: "soc", DeviceClass: "battery"},
-			want: "{{ value_json.soc | default('') }}",
+			want: "{{ value_json.soc | default(none) }}",
 		},
 		{
-			name: "no device_class keeps empty string",
+			name: "no device_class uses none",
 			e:    entity{Key: "odometer"},
-			want: "{{ value_json.odometer | default('') }}",
+			want: "{{ value_json.odometer | default(none) }}",
 		},
 		{
 			name: "explicit template wins",
