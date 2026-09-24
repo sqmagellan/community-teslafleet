@@ -365,6 +365,13 @@ func buildState(snap store.Snapshot, d store.Derived, units config.Units) map[st
 			}
 		}
 		s["doors"] = anyOpen
+		// Frunk and trunk ride in the same dict and back their covers.
+		if v, ok := dm["TrunkFront"]; ok {
+			s["frunk"] = v
+		}
+		if v, ok := dm["TrunkRear"]; ok {
+			s["trunk"] = v
+		}
 	}
 	// Windows composite + aggregate (enum "WindowStateClosed" → open=false).
 	{

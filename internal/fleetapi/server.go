@@ -182,6 +182,11 @@ type Health struct {
 	VehiclesStale  int    `json:"vehicles_stale"`
 	StaleAfterS    int    `json:"stale_after_s"`
 	Reason         string `json:"reason,omitempty"`
+	// CommandsCredential is "ok" or what is wrong with the command relay's
+	// OAuth credential. Empty when commands are off. It does not change
+	// Status: this probe answers "is telemetry flowing", and a bad credential
+	// does not stop that.
+	CommandsCredential string `json:"commands_credential,omitempty"`
 }
 
 // health computes readiness.
@@ -204,6 +209,9 @@ func (s *Server) health() Health {
 		Status:         "ok",
 		LastIngestAgeS: -1,
 		StaleAfterS:    s.cfg.State.StaleAfterSeconds,
+	}
+	if s.relay != nil {
+		h.CommandsCredential = s.relay.CredentialStatus()
 	}
 	if s.ingest != nil {
 		connected := s.ingest.Connected()

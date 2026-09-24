@@ -7,12 +7,14 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -81,12 +83,11 @@ func Entities(cfg config.Commands) []Entity {
 		{Key: "lock", Component: "lock", Name: "Lock", StateKey: "locked"},
 		// Climate (proper thermostat entity: on/off + target temp + current temp).
 		{Key: "climate", Component: "climate", Name: "Climate"},
-		// Covers (frunk/trunk are optimistic — Tesla streams no open-state for them;
-		// charge port + windows have real state).
+		// Covers. DoorState carries TrunkFront/TrunkRear, so all four have real state.
 		{Key: "charge_port", Component: "cover", Name: "Charge port", DeviceClass: "door", StateKey: "charge_port"},
 		{Key: "windows", Component: "cover", Name: "Windows", DeviceClass: "window", StateKey: "windows"},
-		{Key: "frunk", Component: "cover", Name: "Frunk", DeviceClass: "door"},
-		{Key: "trunk", Component: "cover", Name: "Trunk", DeviceClass: "door"},
+		{Key: "frunk", Component: "cover", Name: "Frunk", DeviceClass: "door", StateKey: "frunk"},
+		{Key: "trunk", Component: "cover", Name: "Trunk", DeviceClass: "door", StateKey: "trunk"},
 		// Numbers.
 		{Key: "charge_limit", Component: "number", Name: "Charge limit", Min: 50, Max: 100, Step: 1, Unit: "%", StateKey: "charge_limit"},
 		{Key: "charging_amps", Component: "number", Name: "Charging amps", Min: 0, Max: 32, Step: 1, Unit: "A"},
@@ -151,6 +152,13 @@ type Relay struct {
 	knownVINs map[string]bool
 	store     locator
 	wakeGroup singleflight.Group // coalesces concurrent wakes per VIN
+
+	// Wake budget per car per rolling hour. Every wake is billed and costs
+	// range, and a looping caller can otherwise wake a car all night.
+	// maxWakes <= 0 means no limit.
+	wakeMu   sync.Mutex
+	maxWakes int
+	wakeLog  map[string]*window
 }
 
 // NewRelay builds the command relay. knownVINs is the set of configured VINs;
@@ -179,6 +187,7 @@ func NewRelay(cfg config.Commands, knownVINs []string, st locator, log *slog.Log
 		log:       log,
 		knownVINs: known,
 		store:     st,
+		maxWakes:  cfg.MaxWakesPerHour,
 	}
 	// Eager refresh so we know at startup whether the token is valid (and persist
 	// the rotated token immediately). Commands won't work without a valid token.
@@ -252,10 +261,45 @@ func (r *Relay) Handle(vin, key, payload string) (res Result) {
 		err = r.command(vin, "honk_horn", nil)
 	case "wake":
 		err = r.wake(vin)
-	// --- covers (frunk/trunk are toggles → OPEN and CLOSE both actuate) ---
+		if errors.Is(err, errWakeBudget) {
+			res.Reason = err.Error()
+			return res
+		}
+	// --- covers ---
+	// actuate_trunk is a toggle, and on a Model 3/Y the front one can only open.
+	// Any payload used to reach it, so a CLOSE for the frunk opened it. Each
+	// request is now checked against DoorState and sent only if it would move
+	// the lid the way it asks.
 	case "frunk":
+		open, ok := coverOpen(payload)
+		if !ok {
+			bad("OPEN/CLOSE")
+			return
+		}
+		if !open {
+			res.Reason = "the frunk cannot be closed remotely"
+			return res
+		}
+		if isOpen, known := r.lidOpen(vin, "TrunkFront"); known && isOpen {
+			res.Reason = "the frunk is already open"
+			return res
+		}
 		err = r.command(vin, "actuate_trunk", map[string]any{"which_trunk": "front"})
 	case "trunk":
+		open, ok := coverOpen(payload)
+		if !ok {
+			bad("OPEN/CLOSE")
+			return
+		}
+		isOpen, known := r.lidOpen(vin, "TrunkRear")
+		switch {
+		case !known:
+			res.Reason = "trunk state unknown, and actuate_trunk toggles"
+			return res
+		case isOpen == open:
+			res.Reason = "the trunk is already " + map[bool]string{true: "open", false: "closed"}[open]
+			return res
+		}
 		err = r.command(vin, "actuate_trunk", map[string]any{"which_trunk": "rear"})
 	case "charge_port":
 		open, ok := coverOpen(payload)
@@ -712,6 +756,19 @@ func (r *Relay) vehicleState(vin string) (string, error) {
 	return vs.State, nil
 }
 
+// lidOpen reads one DoorState flag (TrunkFront or TrunkRear) from the store.
+func (r *Relay) lidOpen(vin, sub string) (open, known bool) {
+	if r.store == nil {
+		return false, false
+	}
+	snap, ok := r.store.Snapshot(vin)
+	if !ok {
+		return false, false
+	}
+	open, known = snap.BoolMap(store.FieldDoorState)[sub]
+	return open, known
+}
+
 // latlon returns the vehicle's last-known GPS from the store.
 func (r *Relay) latlon(vin string) (float64, float64, bool) {
 	if r.store == nil {
@@ -788,8 +845,32 @@ func (r *Relay) command(vin, name string, body map[string]any) error {
 	return r.post(urlStr, body)
 }
 
+// errWakeBudget means a wake was refused locally and nothing was sent.
+var errWakeBudget = errors.New("wake budget used up")
+
 func (r *Relay) wake(vin string) error {
+	if !r.takeWake(vin) {
+		return fmt.Errorf("%w: %d wakes in the last hour", errWakeBudget, r.maxWakes)
+	}
 	return r.post(fmt.Sprintf("%s/api/1/vehicles/%s/wake_up", r.proxy, vin), nil)
+}
+
+// takeWake spends one wake from the car's hourly budget.
+func (r *Relay) takeWake(vin string) bool {
+	if r.maxWakes <= 0 {
+		return true
+	}
+	r.wakeMu.Lock()
+	defer r.wakeMu.Unlock()
+	if r.wakeLog == nil {
+		r.wakeLog = map[string]*window{}
+	}
+	w := r.wakeLog[vin]
+	if w == nil {
+		w = &window{max: r.maxWakes, span: time.Hour}
+		r.wakeLog[vin] = w
+	}
+	return w.allow(time.Now())
 }
 
 // isAsleepErr reports whether a command error is Tesla's "car is asleep/offline"
@@ -927,30 +1008,66 @@ func (r *Relay) post(urlStr string, body map[string]any) error {
 	if err != nil {
 		return fmt.Errorf("token: %w", err)
 	}
-	var buf io.Reader
+	var b []byte
 	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
+		if b, err = json.Marshal(body); err != nil {
 			return fmt.Errorf("marshal body: %w", err)
 		}
-		buf = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(http.MethodPost, urlStr, buf)
-	if err != nil {
-		return err
+	for attempt := 0; ; attempt++ {
+		var buf io.Reader
+		if b != nil {
+			buf = bytes.NewReader(b)
+		}
+		req, err := http.NewRequest(http.MethodPost, urlStr, buf)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := r.client.Do(req)
+		if err != nil {
+			return err
+		}
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		// A 429 means Tesla did not run the request, so one retry after the
+		// delay it names cannot double-fire anything.
+		if resp.StatusCode == http.StatusTooManyRequests && attempt == 0 {
+			if d, ok := retryDelay(resp.Header, rb); ok {
+				r.log.Info("rate limited by Tesla, retrying once", "after", d)
+				time.Sleep(d)
+				continue
+			}
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(rb)))
+		}
+		return nil
 	}
-	req.Header.Set("Authorization", "Bearer "+tok)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return err
+}
+
+// maxRetryDelay is the longest 429 delay worth waiting out inside one
+// command. A variable so tests can shrink it.
+var maxRetryDelay = 10 * time.Second
+
+var retryInRe = regexp.MustCompile(`(?i)retry in (\d+) seconds?`)
+
+// retryDelay reads the delay from Retry-After, or from the "Retry in N
+// seconds" text Tesla puts in the body. ok is false when neither is present
+// or the delay is longer than maxRetryDelay.
+func retryDelay(h http.Header, body []byte) (time.Duration, bool) {
+	secs := -1
+	if v, err := strconv.Atoi(strings.TrimSpace(h.Get("Retry-After"))); err == nil {
+		secs = v
+	} else if m := retryInRe.FindSubmatch(body); m != nil {
+		secs, _ = strconv.Atoi(string(m[1]))
 	}
-	defer resp.Body.Close()
-	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(rb)))
+	d := time.Duration(secs) * time.Second
+	if secs < 0 || d > maxRetryDelay {
+		return 0, false
 	}
-	return nil
+	return d, true
 }
 
 // onOff parses an HA switch payload. ok is false for anything unrecognized, so
@@ -1006,7 +1123,46 @@ type tokenManager struct {
 	access  string
 	refresh string
 	expiry  time.Time
+
+	// stMu guards the two errors below, so status() does not wait behind a
+	// refresh that holds mu for up to the client timeout.
+	stMu sync.Mutex
+	// persistErr is set when Tesla rotated the refresh token and writing the
+	// new one to TokenCache failed. Commands keep working on the in-memory
+	// copy, but the next restart would load a spent token. Every later token()
+	// call retries the write.
+	persistErr error
+	// refreshErr is the last failed refresh, cleared by the next success.
+	refreshErr error
 }
+
+func (t *tokenManager) setErrs(persist, refresh *error) {
+	t.stMu.Lock()
+	defer t.stMu.Unlock()
+	if persist != nil {
+		t.persistErr = *persist
+	}
+	if refresh != nil {
+		t.refreshErr = *refresh
+	}
+}
+
+// status is "ok", or says what is wrong with the credential.
+func (t *tokenManager) status() string {
+	t.stMu.Lock()
+	defer t.stMu.Unlock()
+	switch {
+	case t.persistErr != nil:
+		return "rotated refresh token not saved: " + t.persistErr.Error()
+	case t.refreshErr != nil:
+		return "refresh failing: " + t.refreshErr.Error()
+	}
+	return "ok"
+}
+
+// CredentialStatus reports "ok", or what is wrong with the OAuth credential.
+// /healthz shows it.
+func (r *Relay) CredentialStatus() string { return r.tm.status() }
 
 func newTokenManager(cfg config.Commands, log *slog.Logger) *tokenManager {
 	t := &tokenManager{
@@ -1037,7 +1193,9 @@ func (t *tokenManager) adopt(tok string) error {
 	t.refresh = tok
 	t.access = ""
 	t.expiry = time.Time{}
-	return t.persist()
+	err := t.persist()
+	t.setErrs(&err, nil)
+	return err
 }
 
 func (t *tokenManager) persist() error {
@@ -1061,12 +1219,22 @@ func (t *tokenManager) persist() error {
 func (t *tokenManager) token() (string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.stMu.Lock()
+	unsaved := t.persistErr != nil
+	t.stMu.Unlock()
+	if unsaved {
+		err := t.persist()
+		t.setErrs(&err, nil)
+	}
 	if t.access != "" && time.Until(t.expiry) > 60*time.Second {
 		return t.access, nil
 	}
 	if err := t.doRefresh(); err != nil {
+		t.setErrs(nil, &err)
 		return "", err
 	}
+	var none error
+	t.setErrs(nil, &none)
 	return t.access, nil
 }
 
@@ -1103,7 +1271,12 @@ func (t *tokenManager) doRefresh() error {
 	if out.RefreshToken != "" && out.RefreshToken != t.refresh {
 		// Tesla rotates the refresh token on use; persist it so restarts survive.
 		t.refresh = out.RefreshToken
-		_ = t.persist()
+		err := t.persist()
+		t.setErrs(&err, nil)
+		if err != nil {
+			t.log.Error("rotated refresh token is only in memory; a restart now would lose the credential",
+				"path", t.cachePath, "err", err)
+		}
 	}
 	ttl := out.ExpiresIn
 	if ttl <= 0 {

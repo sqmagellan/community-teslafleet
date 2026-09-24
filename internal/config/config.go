@@ -134,6 +134,17 @@ type Commands struct {
 	ValetPIN      string `yaml:"valet_pin"`
 	SpeedLimitPIN string `yaml:"speed_limit_pin"`
 	PinToDrivePIN string `yaml:"pin_to_drive_pin"`
+
+	// Per-car limits on command traffic. 0 turns a limit off.
+	//
+	// MaxCommandsPerHour caps each command key separately (media keys are
+	// exempt). MaxWakesPerHour counts every wake_up the gateway sends, whether
+	// from the Wake button or from waking a sleeping car to deliver a command.
+	// DuplicateWindowSeconds drops a set-state command that repeats one sent
+	// that recently.
+	MaxCommandsPerHour     int `yaml:"max_commands_per_hour"`
+	MaxWakesPerHour        int `yaml:"max_wakes_per_hour"`
+	DuplicateWindowSeconds int `yaml:"duplicate_window_seconds"`
 }
 
 // Ingest is the brokerless ZMQ feed from fleet-telemetry (zmq dispatcher).
@@ -291,6 +302,13 @@ func Defaults() Config {
 			AuthPath:   "/oauth2/v3",
 			TokenCache: "/data/refresh_token",
 			EnrollFile: "/data/ftc.json",
+			// Sized from a week of traffic on two cars (2026-09-17 to 09-24).
+			// Outside one runaway automation, the busiest hour had 5 of a
+			// single command and 6 wakes. The runaway sent 20 window commands
+			// and 8 wakes an hour for four hours.
+			MaxCommandsPerHour:     10,
+			MaxWakesPerHour:        10,
+			DuplicateWindowSeconds: 60,
 		},
 		Units:     Units{System: "metric", RangeInput: "mi", SpeedInput: "mph", OdometerInput: "mi"},
 		Recording: Recording{Path: "/data/telemetry.jsonl", MaxMB: 100},
@@ -505,6 +523,9 @@ func applyEnv(c *Config) {
 	setStr(&c.Commands.ValetPIN, "TGW_TESLA_VALET_PIN")
 	setStr(&c.Commands.SpeedLimitPIN, "TGW_TESLA_SPEED_LIMIT_PIN")
 	setStr(&c.Commands.PinToDrivePIN, "TGW_TESLA_PIN_TO_DRIVE_PIN")
+	setInt(&c.Commands.MaxCommandsPerHour, "TGW_TESLA_MAX_COMMANDS_PER_HOUR")
+	setInt(&c.Commands.MaxWakesPerHour, "TGW_TESLA_MAX_WAKES_PER_HOUR")
+	setInt(&c.Commands.DuplicateWindowSeconds, "TGW_TESLA_DUPLICATE_WINDOW_SECONDS")
 	setBool(&c.Recording.Enabled, "TGW_RECORDING_ENABLED")
 	setStr(&c.Recording.Path, "TGW_RECORDING_PATH")
 	setInt(&c.Recording.MaxMB, "TGW_RECORDING_MAX_MB")

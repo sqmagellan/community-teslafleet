@@ -23,7 +23,8 @@ type Publisher struct {
 	store    *store.Store
 	log      *slog.Logger
 	entities []entity
-	relay    *commands.Relay // optional: command relay (may be nil)
+	relay    *commands.Relay      // optional: command relay (may be nil)
+	dispatch *commands.Dispatcher // per-car command queue; nil when relay is nil
 	interval time.Duration
 	stop     chan struct{}
 
@@ -48,12 +49,20 @@ func NewPublisher(cfg *config.Config, st *store.Store, relay *commands.Relay, lo
 	if cfg.HA.PublishIntervalSeconds <= 0 {
 		interval = 2 * time.Second
 	}
+	var dispatch *commands.Dispatcher
+	if relay != nil {
+		dispatch = commands.NewDispatcher(relay.Handle, commands.Limits{
+			PerKeyPerHour:   cfg.Commands.MaxCommandsPerHour,
+			DuplicateWindow: time.Duration(cfg.Commands.DuplicateWindowSeconds) * time.Second,
+		}, log)
+	}
 	return &Publisher{
 		cfg:      cfg,
 		store:    st,
 		log:      log,
 		entities:   catalog(cfg.Units),
 		relay:      relay,
+		dispatch:   dispatch,
 		interval:   interval,
 		stop:       make(chan struct{}),
 		discovered: map[string]map[string]bool{},
@@ -476,6 +485,12 @@ func (p *Publisher) handleCommand(_ paho.Client, m paho.Message) {
 	if p.relay == nil {
 		return
 	}
+	// A command is a request made now. A retained one is an old request the
+	// broker replays on every subscribe, which includes every reconnect.
+	if m.Retained() {
+		p.log.Warn("ignoring retained command message", "topic", m.Topic())
+		return
+	}
 	parts := strings.Split(m.Topic(), "/")
 	// <base>/<pubID>/cmd/<key>/set
 	if len(parts) != 5 || parts[2] != "cmd" || parts[4] != "set" {
@@ -487,11 +502,10 @@ func (p *Publisher) handleCommand(_ paho.Client, m paho.Message) {
 		return
 	}
 	key, payload := parts[3], string(m.Payload())
-	// Run the relay call off the paho callback: a command can take up to 30s and
-	// would otherwise block the MQTT client's incoming-message dispatch.
-	go func() {
-		p.publishResult(parts[1], p.relay.Handle(vin, key, payload))
-	}()
+	// The dispatcher runs the command on the car's own worker, off the paho
+	// callback, so a slow command does not block incoming messages.
+	id := parts[1]
+	p.dispatch.Submit(vin, key, payload, func(res commands.Result) { p.publishResult(id, res) })
 }
 
 // publishResult reports one command's terminal outcome back to the caller.
@@ -579,7 +593,7 @@ func (p *Publisher) commandDiscoveryConfig(v config.Vehicle, ce commands.Entity,
 			c["state_closed"] = "closed"
 			c["value_template"] = fmt.Sprintf("{{ 'open' if value_json.%s else 'closed' }}", ce.StateKey)
 		} else {
-			c["optimistic"] = true // frunk/trunk: no open-state telemetry
+			c["optimistic"] = true // no state key: HA assumes the commanded state
 		}
 	case "climate":
 		// A climate entity uses dedicated mode/temperature topics, not command_topic.
