@@ -654,6 +654,114 @@ Both used `latest`, so they could silently drift onto different versions and
 "it passed locally" stopped being evidence. Pinned to v2.13.2 in
 `.github/workflows/ci.yml` and the deploy gate; bump them together.
 
+## Review batch, 2026-09-23
+
+These came from a full review of the tree, a second model reviewing it
+independently, and a week of the deployment's own command logs. Each item has
+a regression test. Like the 2026-09-06 batches these are focused commits, not `fix/`
+branches.
+
+### `fix/command-queue`: one car, one command at a time
+
+Every MQTT command used to get its own goroutine, so two commands for the same
+car raced. Dragging the charge-limit slider from 60 to 80 could leave the car
+at 70, depending on which request Tesla saw last. Nothing limited volume
+either. On 2026-09-19 a looping Home Assistant automation sent one car 20
+window commands and 8 wakes an hour for four hours, and the gateway sent all
+of them.
+
+Commands for a car now run one at a time, in arrival order. A set-state
+command that is still waiting takes the payload of a newer one with the same
+key, so the slider ends where it was released. Three limits apply per car, and
+each can be turned off with 0:
+
+| Setting | Default | What it stops |
+|---|---|---|
+| `commands.duplicate_window_seconds` | 60 | the same set-state command repeated within a minute |
+| `commands.max_commands_per_hour` | 10 | more than 10 of one command key in an hour (media keys exempt) |
+| `commands.max_wakes_per_hour` | 10 | more than 10 wakes in an hour, counting wakes done to deliver a command |
+
+The defaults come from a week of traffic on two cars. Outside the runaway
+automation, the busiest hour had 5 of one command and 6 wakes. A refused
+command is published on `cmd_result` with its reason, like any other refusal.
+
+### `fix/rate-limit-retry`: a 429 is retried once
+
+The proxy's `status 429: Retry in 3 seconds` was treated as a final failure. A
+429 means Tesla did not run the request, so the relay now waits the delay it
+names (from `Retry-After` or the body, at most 10 s) and tries once more.
+
+### `fix/retained-commands`: a retained command is ignored
+
+A command topic carries requests made now. A retained message there is an old
+request, and the broker replays it on every subscribe, which happens on every
+reconnect. It is dropped with a warning.
+
+### `fix/frunk-trunk`: the covers use `DoorState`
+
+`actuate_trunk` toggles, and on a Model 3 or Y the frunk can only open. Any
+payload reached it, so a `CLOSE` for the frunk opened it. `DoorState` already
+carries `TrunkFront` and `TrunkRear`, so both covers now show real state, and
+the relay only sends a command that would move the lid the way it asks. A
+trunk whose state is unknown is not toggled.
+
+### `fix/unsaved-token`: a rotated token that could not be saved is reported
+
+When Tesla rotated the refresh token and writing the new one to the cache
+failed, the error was dropped. Commands kept working on the copy in memory
+and died at the next restart, when the spent token was loaded. The failure is
+now logged as an error, retried on every later token call, and shown in
+`/healthz` as `commands_credential`.
+
+### `fix/wizard-enroll`: step 7 sends the envelope and a `ca`
+
+The 2026-09-06 envelope fix covered `/admin/enroll` but not the wizard, which
+still posted the bare config and panicked the proxy (upstream issue #1). Both
+paths now use `enroll.Wrap`, with the VINs the wizard listed in step 6. Tesla
+also rejects a config without a `ca`, even for a Let's Encrypt certificate, so
+step 6b takes a pasted chain (or reads `onboard.ca_file`, which defaults to
+`stream.tls_cert`) and step 7 refuses a config that has none.
+
+### `fix/wizard-fleet-api`: the Fleet API URL can be entered in step 1
+
+Step 4 needs the regional Fleet API URL, and the add-on had no way to set it
+(upstream issue #3). Step 1 now has a field for it, and the add-on has a
+`fleet_api_url` option.
+
+### `fix/addon-options`: the add-on can turn commands on
+
+`commands_enabled` was in the add-on form, but `tesla_client_id` was not, and
+config validation makes commands fatal without it. The form now has
+`tesla_client_id`, `tesla_client_secret`, `tesla_refresh_token` and
+`fleet_api_url`. `telemetry_profile` was read by nothing; it now preselects the
+wizard's enrollment profile. The add-on image builds with Go 1.26.6 to match
+`go.mod`.
+
+### `fix/billable-endpoints`: enroll and upstream fetches need a token
+
+`/admin/enroll` and `/debug/upstream/{vin}` share the `/debug/state` gate, which
+lets anyone in when `debug.token` is empty. That is fine for a read-only dump
+behind a loopback bind. It is not fine for a paid call or a rewrite of the car's
+telemetry config, so those two now answer 403 until a token is set.
+
+### `fix/wizard-csrf`: cross-site posts, and replacing the key
+
+A browser attaches cached Basic Auth credentials to a form posted from any
+site, so any page the operator opened could drive the wizard. POSTs marked
+`Sec-Fetch-Site: cross-site` are now refused. Separately, pressing Generate a
+second time replaced the key every car is paired to. It now asks for a
+confirmation box first.
+
+### Smaller fixes in the same batch
+
+- Supervised child processes no longer inherit `TGW_*` or `SUPERVISOR_TOKEN`.
+  Those can hold the Tesla client secret, the refresh token and the MQTT
+  password, and neither child needs them.
+- `config.Redact` masks `onboard.password` and `debug.token` too.
+- `docker-compose.example.yml` builds this tree instead of pulling upstream's
+  image, and binds 4460 to loopback. That port has no authentication and
+  serves live GPS.
+
 ## Verification, which lives outside this repo
 
 The deploy gate used here is not in this repository and is not proposed upstream:
@@ -697,8 +805,7 @@ not an alternative: every `state.json` and refresh-token write would start faili
 
 ## Publishing
 
-This fork is published under **sqmagellan** (`sqmagellan@gmail.com`), which is the
-authorship on every non-upstream commit here.
+This fork is published under **sqmagellan** (`sqmagellan@gmail.com`).
 
 Upstream commits keep their ORIGINAL hashes. When the placeholder authorship was
 rewritten, the first attempt ran `git filter-branch` over `--all` and silently
