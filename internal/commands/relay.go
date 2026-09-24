@@ -237,10 +237,12 @@ func (r *Relay) Handle(vin, key, payload string) (res Result) {
 	// lock bug was "anything that isn't LOCK means unlock", and the same shape
 	// was repeated across the switches, covers and selects. A retained MQTT
 	// topic, a trailing newline, or a typo must never resolve to one of the two
-	// physical states by default.
+	// physical states by default. The refusal is also named in the Result, so a
+	// dropped command is visible to the caller and not only to the log.
 	bad := func(expected string) {
 		r.log.Warn("ignoring command with unrecognized payload",
 			"vin", vin, "key", key, "payload", payload, "expected", expected)
+		res.Reason = "unrecognized payload " + strconv.Quote(payload) + ", expected " + expected
 	}
 	switch key {
 	// --- buttons ---
