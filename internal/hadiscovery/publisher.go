@@ -530,7 +530,6 @@ func (p *Publisher) publishResult(pubID string, res commands.Result) {
 	}
 }
 
-
 func (p *Publisher) commandDiscoveryConfig(v config.Vehicle, ce commands.Entity, dev, origin map[string]any) map[string]any {
 	id := p.pubID(v)
 	cmdTopic := fmt.Sprintf("%s/%s/cmd/%s/set", p.cfg.HA.StateTopicBase, id, ce.Key)
