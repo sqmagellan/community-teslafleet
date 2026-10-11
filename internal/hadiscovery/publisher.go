@@ -425,12 +425,18 @@ func (p *Publisher) genericDiscoveryConfig(v config.Vehicle, field string, val a
 	}
 	// none, not '': see valueTemplate.
 	c["value_template"] = fmt.Sprintf("{{ value_json.%s | default(none) }}", field)
-	if dc, unit := genericClassUnit(field); dc != "" {
-		c["device_class"] = dc
-		if unit != "" {
-			c["unit_of_measurement"] = unit
+	// The name heuristic only applies to values that are actually numeric. Enum strings
+	// carry the same words: SettingTemperatureUnit = "TemperatureUnitCelsius",
+	// SettingTirePressureUnit = "PressureUnitBar". A numeric device_class on those makes
+	// Home Assistant reject every state update ("has the non-numeric value").
+	if _, numeric := store.ToFloat(val); numeric {
+		if dc, unit := genericClassUnit(field); dc != "" {
+			c["device_class"] = dc
+			if unit != "" {
+				c["unit_of_measurement"] = unit
+			}
+			c["state_class"] = "measurement"
 		}
-		c["state_class"] = "measurement"
 	}
 	return "sensor", c
 }

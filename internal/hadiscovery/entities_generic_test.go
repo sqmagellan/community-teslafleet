@@ -161,6 +161,30 @@ func TestGenericDiscoveryConfig(t *testing.T) {
 		t.Errorf("value_template = %q", tpl)
 	}
 
+	// Enum strings whose names match the heuristic must stay plain sensors: a numeric
+	// device_class makes HA reject every update. Seen live on a Model Y, 2026-10-11.
+	for field, val := range map[string]any{
+		"SettingTemperatureUnit":                  "TemperatureUnitCelsius",
+		"SettingTirePressureUnit":                 "PressureUnitBar",
+		"CabinOverheatProtectionTemperatureLimit": "ClimateOverheatProtectionTempLimitHigh",
+	} {
+		comp, cfg := p.genericDiscoveryConfig(v, field, val, dev, origin)
+		if comp != "sensor" {
+			t.Errorf("%s: component = %q, want sensor", field, comp)
+		}
+		for _, k := range []string{"device_class", "unit_of_measurement", "state_class"} {
+			if got, ok := cfg[k]; ok {
+				t.Errorf("%s (enum %q): %s = %v, want absent", field, val, k, got)
+			}
+		}
+	}
+
+	// A number that arrives as a string is still numeric and keeps the heuristic.
+	_, ncfg := p.genericDiscoveryConfig(v, "ModuleTempMax", "21.5", dev, origin)
+	if ncfg["device_class"] != "temperature" || ncfg["unit_of_measurement"] != "°C" {
+		t.Errorf("numeric string lost its heuristics: %v %v", ncfg["device_class"], ncfg["unit_of_measurement"])
+	}
+
 	// Bool field becomes a binary_sensor.
 	bc, bcfg := p.genericDiscoveryConfig(v, "ServiceMode", true, dev, origin)
 	if bc != "binary_sensor" {
