@@ -42,3 +42,27 @@ func TestEstimateCost(t *testing.T) {
 		t.Errorf("implausible estimate: %+v", e)
 	}
 }
+
+func TestGenerate_RequiredMinimumDelta(t *testing.T) {
+	// Tesla rejects the whole config if one of these fields has no minimum_delta.
+	for _, profile := range Profiles {
+		ftc := Generate(profile, "x", 443)
+		for field, need := range requiredMinimumDelta {
+			fc, enrolled := ftc.Fields[field]
+			if !enrolled {
+				continue // the profile leaves it off; nothing to send
+			}
+			if fc["minimum_delta"] < need {
+				t.Errorf("profile %s: %s minimum_delta = %d, want >= %d", profile, field, fc["minimum_delta"], need)
+			}
+		}
+	}
+	// SelfDrivingMilesSinceReset is a diagnostic field: enrolled by balanced (and live).
+	if fc, ok := Generate("balanced", "x", 443).Fields["SelfDrivingMilesSinceReset"]; !ok || fc["minimum_delta"] != 1 {
+		t.Errorf("balanced: SelfDrivingMilesSinceReset = %v, want enrolled with minimum_delta 1", fc)
+	}
+	// Fields Tesla does not require it for stay without one.
+	if _, ok := Generate("balanced", "x", 443).Fields["Location"]["minimum_delta"]; ok {
+		t.Errorf("Location should not get a minimum_delta")
+	}
+}
