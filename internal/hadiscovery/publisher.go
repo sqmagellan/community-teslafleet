@@ -383,7 +383,14 @@ func (p *Publisher) discoverNewFields(v config.Vehicle, snap store.Snapshot) {
 			p.markFieldDiscovered(v.VIN, name)
 			continue
 		}
-		component, cfg := p.genericDiscoveryConfig(v, name, fv.Value, dev, origin)
+		// A nil value (the car reported the field invalid, or a restored state file
+		// carried it) says nothing about its type. Leave it undiscovered so the first
+		// real value decides between sensor and binary_sensor and whether the name
+		// heuristic applies; the retained config would otherwise stay classless.
+		if fv.Value == nil {
+			continue
+		}
+		component, cfg :=p.genericDiscoveryConfig(v, name, fv.Value, dev, origin)
 		topic := fmt.Sprintf("%s/%s/%s/raw_%s/config", p.cfg.HA.DiscoveryPrefix, component, p.pubID(v), name)
 		payload, err := json.Marshal(cfg)
 		if err != nil {
