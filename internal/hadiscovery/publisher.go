@@ -57,9 +57,9 @@ func NewPublisher(cfg *config.Config, st *store.Store, relay *commands.Relay, lo
 		}, log)
 	}
 	return &Publisher{
-		cfg:      cfg,
-		store:    st,
-		log:      log,
+		cfg:        cfg,
+		store:      st,
+		log:        log,
 		entities:   catalog(cfg.Units),
 		relay:      relay,
 		dispatch:   dispatch,
@@ -383,6 +383,13 @@ func (p *Publisher) discoverNewFields(v config.Vehicle, snap store.Snapshot) {
 			p.markFieldDiscovered(v.VIN, name)
 			continue
 		}
+		// A nil value (the car reported the field invalid, or a restored state file
+		// carried it) says nothing about its type. Leave it undiscovered so the first
+		// real value decides between sensor and binary_sensor and whether the name
+		// heuristic applies; the retained config would otherwise stay classless.
+		if fv.Value == nil {
+			continue
+		}
 		component, cfg := p.genericDiscoveryConfig(v, name, fv.Value, dev, origin)
 		topic := fmt.Sprintf("%s/%s/%s/raw_%s/config", p.cfg.HA.DiscoveryPrefix, component, p.pubID(v), name)
 		payload, err := json.Marshal(cfg)
@@ -425,12 +432,18 @@ func (p *Publisher) genericDiscoveryConfig(v config.Vehicle, field string, val a
 	}
 	// none, not '': see valueTemplate.
 	c["value_template"] = fmt.Sprintf("{{ value_json.%s | default(none) }}", field)
-	if dc, unit := genericClassUnit(field); dc != "" {
-		c["device_class"] = dc
-		if unit != "" {
-			c["unit_of_measurement"] = unit
+	// The name heuristic only applies to values that are actually numeric. Enum strings
+	// carry the same words: SettingTemperatureUnit = "TemperatureUnitCelsius",
+	// SettingTirePressureUnit = "PressureUnitBar". A numeric device_class on those makes
+	// Home Assistant reject every state update ("has the non-numeric value").
+	if _, numeric := store.ToFloat(val); numeric {
+		if dc, unit := genericClassUnit(field); dc != "" {
+			c["device_class"] = dc
+			if unit != "" {
+				c["unit_of_measurement"] = unit
+			}
+			c["state_class"] = "measurement"
 		}
-		c["state_class"] = "measurement"
 	}
 	return "sensor", c
 }
