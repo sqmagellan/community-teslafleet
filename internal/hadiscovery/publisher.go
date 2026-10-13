@@ -57,9 +57,9 @@ func NewPublisher(cfg *config.Config, st *store.Store, relay *commands.Relay, lo
 		}, log)
 	}
 	return &Publisher{
-		cfg:      cfg,
-		store:    st,
-		log:      log,
+		cfg:        cfg,
+		store:      st,
+		log:        log,
 		entities:   catalog(cfg.Units),
 		relay:      relay,
 		dispatch:   dispatch,
@@ -390,7 +390,7 @@ func (p *Publisher) discoverNewFields(v config.Vehicle, snap store.Snapshot) {
 		if fv.Value == nil {
 			continue
 		}
-		component, cfg :=p.genericDiscoveryConfig(v, name, fv.Value, dev, origin)
+		component, cfg := p.genericDiscoveryConfig(v, name, fv.Value, dev, origin)
 		topic := fmt.Sprintf("%s/%s/%s/raw_%s/config", p.cfg.HA.DiscoveryPrefix, component, p.pubID(v), name)
 		payload, err := json.Marshal(cfg)
 		if err != nil {
