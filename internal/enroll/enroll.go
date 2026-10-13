@@ -102,6 +102,16 @@ func profileTier(profile, cat string) string {
 	return "off"
 }
 
+// requiredMinimumDelta lists fields Tesla refuses to enroll without an explicit
+// minimum_delta, with the smallest value it accepts. The tiers never set one for these, so
+// without this a whole profile is rejected with HTTP 400, e.g.
+// "SelfDrivingMilesSinceReset requires minimum delta be explicitly set and >= 1"
+// (seen on a 2025 Model Y, 2026-10-11). Tesla reports one offending field per response;
+// add new ones here as they surface.
+var requiredMinimumDelta = map[string]int{
+	"SelfDrivingMilesSinceReset": 1,
+}
+
 // FTC is a fleet_telemetry_config. Wrap it with Wrap before posting it.
 type FTC struct {
 	Hostname    string                    `json:"hostname"`
@@ -125,6 +135,9 @@ func Generate(profile, hostname string, port int) FTC {
 		fc := map[string]int{"interval_seconds": t.interval}
 		if t.delta > 0 {
 			fc["minimum_delta"] = t.delta
+		}
+		if need, ok := requiredMinimumDelta[f]; ok && fc["minimum_delta"] < need {
+			fc["minimum_delta"] = need
 		}
 		if t.resend > 0 {
 			fc["resend_interval_seconds"] = t.resend
