@@ -42,6 +42,12 @@ type Publisher struct {
 	// covered is the set of telemetry field names represented by a curated entity;
 	// generic per-field discovery skips them. Computed once.
 	covered map[string]bool
+
+	// lastState is the last state document published per VIN; sticky lists the keys
+	// carried forward from it when a tick's document lacks them (see carryForward).
+	// Only touched from the single publishState goroutine, so no lock is needed.
+	lastState map[string]map[string]any
+	sticky    []string
 }
 
 func NewPublisher(cfg *config.Config, st *store.Store, relay *commands.Relay, log *slog.Logger) *Publisher {
@@ -68,6 +74,43 @@ func NewPublisher(cfg *config.Config, st *store.Store, relay *commands.Relay, lo
 		discovered: map[string]map[string]bool{},
 		announced:  map[string]bool{},
 		covered:    coveredFields(),
+		lastState:  map[string]map[string]any{},
+		sticky:     stickyKeys(cfg.Commands),
+	}
+}
+
+// stickyKeys returns the state keys read by a template with no default: the
+// switch/cover/lock state templates and the climate mode template, which render
+// an absent key as OFF / closed / UNLOCKED / off. Derived from the command
+// catalog so a new stateful entity is covered without editing a list here.
+func stickyKeys(cmds config.Commands) []string {
+	keys := []string{"climate_on"}
+	for _, ce := range commands.Entities(cmds) {
+		switch ce.Component {
+		case "switch", "cover", "lock":
+			if ce.StateKey != "" {
+				keys = append(keys, ce.StateKey)
+			}
+		}
+	}
+	return keys
+}
+
+// carryForward copies each key in keys from prev into st when st lacks it.
+//
+// The car stops reporting some fields for a while (a 2026-10-13 firmware install
+// dropped ChargePortDoorOpen and IsClimateOn for 22 minutes). The templates for
+// those keys have no default, so every tick HA logged a template warning and
+// showed a plugged-in car's charge port as closed. The last known value is the
+// better answer: the store never forgets a field either, it only stops updating.
+func carryForward(st, prev map[string]any, keys []string) {
+	for _, k := range keys {
+		if _, ok := st[k]; ok {
+			continue
+		}
+		if v, ok := prev[k]; ok {
+			st[k] = v
+		}
 	}
 }
 
@@ -350,6 +393,8 @@ func (p *Publisher) publishState() {
 		// publishing state, so HA has the entity by the time the value lands.
 		p.discoverNewFields(v, snap)
 		st := buildState(snap, d, p.cfg.Units)
+		carryForward(st, p.lastState[v.VIN], p.sticky)
+		p.lastState[v.VIN] = st
 		payload, err := json.Marshal(st)
 		if err != nil {
 			p.log.Error("marshal state failed", "vin", v.VIN, "err", err)

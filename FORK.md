@@ -762,6 +762,20 @@ confirmation box first.
   image, and binds 4460 to loopback. That port has no authentication and
   serves live GPS.
 
+## Fix, 2026-10-13
+
+### `fix/sticky-template-state`: a field the car stops sending keeps its value
+
+The switch, cover and lock state templates, and the climate mode template, have
+no default. When a key was missing from the state document, HA logged a template
+warning on every tick and rendered the entity as `OFF`, `closed`, `UNLOCKED` or
+`off`. Cars stop sending some fields for a while, for example during a firmware
+install, which dropped `ChargePortDoorOpen` and `IsClimateOn` for 22 minutes and
+showed a plugged-in car's charge port as closed. The publisher now carries those
+keys forward from the last document it published for the car. The key list is
+built from the command catalog, so a new stateful entity is covered too. A key
+that has never been seen is still left out.
+
 ## Verification, which lives outside this repo
 
 The deploy gate used here is not in this repository and is not proposed upstream:
