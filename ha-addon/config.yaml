@@ -1,17 +1,15 @@
-# Home Assistant add-on manifest. Bundled image runs the WHOLE stack in one
-# container — fleet-telemetry + the vehicle-command proxy + the gateway — supervised
-# by the gateway (TGW_STREAM_EMBEDDED=true is baked into the image). The gateway
-# reads HA's /data/options.json directly. MQTT broker is auto-detected from the
-# Supervisor (services: mqtt:want + hassio_api). The onboarding wizard is served via
-# ingress (HA sidebar). Config is done in HA's native add-on options form below.
+# Home Assistant add-on manifest. One container runs fleet-telemetry, the
+# vehicle-command proxy and the gateway, which supervises the other two
+# (TGW_STREAM_EMBEDDED=true is set in the image). The gateway reads
+# /data/options.json and finds the MQTT broker through the Supervisor.
 #
-# NOTE: `version` is overwritten by the release workflow to match the published image tag.
+# `version` must match the image tag. The release workflow checks it on a tag.
 name: Community TeslaFleet
-version: "0.1.8"
+version: "0.2.0"
 slug: community_teslafleet
-description: Self-hosted Tesla Fleet Telemetry → Home Assistant (+ optional TeslaMate Fleet API)
-url: https://github.com/LasseLegarth/community-teslafleet
-image: ghcr.io/lasselegarth/community-teslafleet-addon   # bundled multi-arch image (full stack)
+description: Tesla Fleet Telemetry for Home Assistant, with an optional Fleet API for TeslaMate
+url: https://github.com/sqmagellan/community-teslafleet
+image: ghcr.io/sqmagellan/community-teslafleet-addon
 arch:
   - aarch64
   - amd64
@@ -23,15 +21,14 @@ panel_icon: mdi:car-electric
 ingress: true               # serve the onboarding wizard in the HA sidebar
 ingress_port: 8099
 ports:
-  "4443/tcp": 4443          # fleet-telemetry mTLS — the car dials in (must be reachable from the internet)
-  "8098/tcp": 8098          # serves the partner public key at /.well-known/... (route your domain here)
-  "4460/tcp": null          # Fleet API + WSS for TeslaMate (LAN-only; set a port only if using TeslaMate)
+  "4443/tcp": 4443          # telemetry, mutual TLS; must be reachable from the internet
+  "8098/tcp": 8098          # public key for /.well-known/
+  "4460/tcp": null          # Fleet API for TeslaMate, LAN only
 ports_description:
-  "4443/tcp": fleet-telemetry — the car connects here (port-forward this, or use a Cloudflare Tunnel)
-  "8098/tcp": Partner public key (.well-known) — route https://<your-domain>/.well-known/... here
-  "4460/tcp": Fleet API + WSS for TeslaMate (LAN-only; leave unset if not using TeslaMate)
-# State (keys, config, ftc.json, certs) lives in the add-on's own persistent /data
-# volume — automatically writable and included in HA backups; no map entry needed.
+  "4443/tcp": Telemetry. The car connects here; forward this port on your router.
+  "8098/tcp": Public key. Route https://<domain>/.well-known/ here.
+  "4460/tcp": Fleet API for TeslaMate. LAN only; leave unset if you do not use TeslaMate.
+# State lives in the add-on's own /data, which HA backups include.
 options:
   namespace: "tesla_telemetry"
   units_system: metric

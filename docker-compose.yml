@@ -1,21 +1,21 @@
-# community-teslafleet — full self-host stack (standalone, no Home Assistant add-on).
+# community-teslafleet: the full stack without Home Assistant's add-on system.
 #
-# Services:
-#   fleet-telemetry        Tesla's receiver. Vehicles dial IN over TLS; it fans records
-#                          out to the gateway over brokerless ZMQ. Owns the public port.
-#   vehicle-command-proxy  Signs HA→car commands with your private key (loopback only).
-#   gateway                This project: ZMQ ingest → Fleet API + WSS (TeslaMate) + HA MQTT.
+#   fleet-telemetry        Tesla's receiver. The car connects to it with mutual
+#                          TLS; it passes records to the gateway over ZMQ.
+#   vehicle-command-proxy  Signs commands with your private key. Loopback only.
+#   gateway                Fleet API and WebSocket for TeslaMate, MQTT for HA.
 #
-# No MQTT broker is needed for ingest (ZMQ is brokerless); the gateway publishes HA
-# discovery to YOUR Home Assistant broker (TGW_HA_BROKER).
+# Ingest needs no MQTT broker. The gateway publishes to your Home Assistant
+# broker (TGW_HA_BROKER).
 #
-# Prerequisites (see README — these are the real work, not the gateway):
-#   - A public domain + TLS cert for the telemetry hostname (./certs/fullchain.pem + privkey.pem).
-#     Easiest with no open ports: certbot DNS-01 (e.g. certbot/dns-cloudflare). See README.
-#   - The partner public key hosted at https://<domain>/.well-known/appspecific/com.tesla.3p.public-key.pem
-#     (can be ANY static HTTPS host on your domain — Cloudflare/GitHub Pages, etc.).
-#   - ./proxy/ with private-key.pem + tls/cert.pem + tls/key.pem (the onboarding wizard generates these).
-# Copy .env.example → .env and fill it in first.
+# Before starting (see README):
+#   - A certificate for the telemetry hostname in ./certs (fullchain.pem,
+#     privkey.pem). certbot DNS-01 needs no open port 80.
+#   - The public key at https://<domain>/.well-known/appspecific/com.tesla.3p.public-key.pem,
+#     on any HTTPS host on your domain.
+#   - ./proxy/ with private-key.pem, tls/cert.pem and tls/key.pem. The wizard
+#     generates these.
+#   - .env, copied from .env.example.
 
 name: community-teslafleet
 
@@ -46,8 +46,7 @@ services:
       - "127.0.0.1:4443:4443"                             # loopback only
 
   gateway:
-    # This fork's deployment file builds from source. The upstream ghcr image is
-    # a different codebase and does not carry the fixes in FORK.md.
+    # Or image: ghcr.io/sqmagellan/community-teslafleet:<version>
     build: .
     image: community-teslafleet:local
     restart: unless-stopped

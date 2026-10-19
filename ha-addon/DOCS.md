@@ -1,51 +1,40 @@
-# Community TeslaFleet: Home Assistant add-on
+# Community TeslaFleet
 
-Brings your Tesla into Home Assistant via MQTT auto-discovery. This add-on is
-**self-contained**: it bundles the whole stack: Tesla **fleet-telemetry** (receives
-the car's stream), the **vehicle-command proxy** (for commands), and the gateway,
-in one container. You don't run fleet-telemetry separately. Optionally it also serves
-a local Tesla **Fleet API + WSS** for TeslaMate (free polling that never wakes the car).
+Brings your Tesla into Home Assistant through MQTT discovery. One container runs Tesla's fleet-telemetry server, the vehicle-command proxy and the gateway. It can also serve a local Fleet API for TeslaMate.
 
-The gateway supervises the bundled processes and serves a guided **onboarding wizard**
-in the HA sidebar (via ingress). Configure the rest in the **Configuration** tab.
+Open the add-on from the sidebar to run the onboarding wizard. It covers the keypair, partner registration, key pairing and enrollment. Home Assistant's MQTT broker is detected automatically.
 
-## What you still need (Tesla's requirements, can't be removed)
+## What you need
 
-- **A public domain + HTTPS** for your Tesla developer app's `.well-known` public key.
-- **Public reachability for the telemetry port**: the car dials *in*. Either
-  **port-forward** the telemetry port (below) on your router to Home Assistant, or run a
-  **Cloudflare Tunnel**. Behind CGNAT, use the tunnel.
-- **A Tesla developer app** (free at developer.tesla.com) gives you `client_id` + `client_secret`.
-
-The onboarding wizard walks you through keys, partner registration, virtual-key
-pairing, and enrollment. HA's MQTT broker is **auto-detected** from the Supervisor.
+- **A Tesla developer app**, free at developer.tesla.com, for the client ID and secret.
+- **A public domain with HTTPS.** Tesla fetches your public key from it. The add-on serves the key on port 8098; route your domain's `/.well-known/` path there.
+- **An open telemetry port.** The car connects to it with mutual TLS. Forward the port on your router to Home Assistant. Cloudflare Tunnel cannot carry this connection.
 
 ## Options
 
 | Option | Meaning |
 |---|---|
-| `namespace` | telemetry namespace (leave default unless you have a reason) |
-| `units_system` | `metric` (km/°C/bar) or `imperial` (mi/°F/psi), how HA displays units |
-| `device_identifier` | `name` (slug, keeps the VIN out of entity_ids) or `vin` |
-| `telemetry_port` | port the car connects to (port-forward this, or tunnel to it). Default `4443` |
-| `telemetry_profile` | `eco` / `balanced` / `live` / `custom`. Preselects the wizard's enrollment profile; it does not re-enroll by itself |
-| `fleetapi_enabled` | `true` only if you also run TeslaMate |
-| `vins` | **optional**, leave empty to auto-discover your car(s); set to filter to specific VINs |
-| `commands_enabled` | enable HA-to-car commands (starts the bundled proxy; needs onboarding and `tesla_client_id`) |
-| `tesla_client_id` / `tesla_client_secret` | your developer.tesla.com app credentials |
-| `tesla_refresh_token` | only for the first start if you did not paste a token in the wizard |
-| `fleet_api_url` | Fleet API base for your region, e.g. `https://fleet-api.prd.na.vn.cloud.tesla.com` |
-| `log_level` | debug / info / warn / error |
+| `namespace` | Telemetry namespace. Leave the default. |
+| `units_system` | `metric` or `imperial`. Display only. |
+| `device_identifier` | `name` keeps the VIN out of entity IDs. `vin` uses it. |
+| `telemetry_port` | The port the car connects to. Default 4443. |
+| `telemetry_profile` | The wizard's starting enrollment profile. Changing it does not re-enroll the car. |
+| `fleetapi_enabled` | Turn on only if you run TeslaMate. |
+| `vins` | Leave empty to find cars automatically, or list VINs to limit which are published. |
+| `commands_enabled` | Lets Home Assistant control the car. Needs onboarding and `tesla_client_id`. |
+| `tesla_client_id`, `tesla_client_secret` | Your developer app's credentials. |
+| `tesla_refresh_token` | First start only, if you did not paste a token in the wizard. |
+| `fleet_api_url` | Your region's Fleet API, for example `https://fleet-api.prd.na.vn.cloud.tesla.com`. |
+| `log_level` | `debug`, `info`, `warn` or `error`. |
 
 ## Ports
 
-- **`4443/tcp` (telemetry)**: the car connects here from the internet. **Must be
-  reachable**: port-forward it on your router to Home Assistant, or use a Cloudflare
-  Tunnel. Change the number with `telemetry_port`.
-- **`4460/tcp` (Fleet API + WSS for TeslaMate)**: **LAN-only, never expose to the
-  internet.** Leave unmapped unless you run TeslaMate on another host.
+- **4443/tcp, telemetry**: must be reachable from the internet. Change it with `telemetry_port`.
+- **8098/tcp, public key**: route `https://<domain>/.well-known/` here.
+- **4460/tcp, TeslaMate**: LAN only. No authentication, and it serves live location. Leave it unmapped unless TeslaMate runs on another host.
 
 ## Data
 
-Keys, config, `ftc.json`, certs and the token cache persist in the add-on's `/data`
-(included in HA backups).
+Keys, the enrollment config, certificates and the token cache live in `/data`. Home Assistant backups include it.
+
+Report problems at https://github.com/sqmagellan/community-teslafleet/issues.

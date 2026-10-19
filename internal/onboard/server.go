@@ -342,7 +342,7 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) downloadPublic(w http.ResponseWriter, r *http.Request) {
 	pub, err := s.store.publicPEM()
 	if err != nil {
-		http.Error(w, "no key yet — generate first", http.StatusNotFound)
+		http.Error(w, "no key yet; generate one first", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-pem-file")
@@ -430,7 +430,7 @@ func (s *Server) listVehicles(w http.ResponseWriter, r *http.Request) {
 	s.store.st.Vehicles = vs
 	_ = s.store.saveState()
 	s.store.mu.Unlock()
-	s.render(w, r, "✓ Found "+itoa(len(vs))+" vehicle(s). Pair each via the link below, then enroll.")
+	s.render(w, r, "✓ Found "+itoa(len(vs))+" vehicle(s). Pair each one with the link below, then enroll.")
 }
 
 // saveEnrollment generates an ftc.json from the chosen profile + endpoint and writes it
@@ -474,11 +474,11 @@ func (s *Server) saveEnrollment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	payload, err := os.ReadFile(s.opts.EnrollFile)
 	if err != nil {
-		s.render(w, r, "✗ No enrollment file at "+s.opts.EnrollFile+" — set intervals on the Enrollment page first.")
+		s.render(w, r, "✗ No enrollment config at "+s.opts.EnrollFile+". Save one in step 6b first.")
 		return
 	}
 	if !enroll.HasCA(payload) {
-		s.render(w, r, "✗ The saved config has no certificate chain (ca). Tesla rejects it without one. Paste the chain on the Enrollment step and save again.")
+		s.render(w, r, "✗ The saved config has no certificate chain (ca), and Tesla rejects it without one. Paste the chain in step 6b and save again.")
 		return
 	}
 	s.store.mu.Lock()
@@ -505,7 +505,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "✗ Enroll failed: "+err.Error())
 		return
 	}
-	s.render(w, r, "✓ Telemetry config sent. The car adopts it within a minute (poll synced).")
+	s.render(w, r, "✓ Telemetry config sent. The car adopts it within a minute.")
 }
 
 // chain returns the certificate chain for the enrollment config: the pasted

@@ -1,114 +1,84 @@
 # community-teslafleet
 
-Bring your Tesla into Home Assistant, free and self-hosted.
+Tesla Fleet Telemetry for Home Assistant and TeslaMate, self-hosted.
 
-## About this fork
-
-A fork of [LasseLegarth/community-teslafleet](https://github.com/LasseLegarth/community-teslafleet) (MIT).
-The design and almost all the code are the original author's; authorship and licence are
-unchanged. Want the project itself? Start upstream.
-
-Given upstream builds its image only on `v*` tags, `:latest` predates several important fixes,
-including one where a dropped ZMQ peer wedges ingest while MQTT republishes stale values. We run
-this against two cars, so patches live on branches, not in a dirty working tree. Each change is
-one self-contained commit on its own `fix/…` branch cut from unmodified upstream, so each can go
-upstream as its own PR. See [FORK.md](FORK.md).
+This is the maintained fork of [LasseLegarth/community-teslafleet](https://github.com/LasseLegarth/community-teslafleet), which has had no commits since July 2026. It fixes the bugs reported there and many others; see [CHANGELOG.md](CHANGELOG.md). The original design and most of the code are the original author's. The MIT license and the original commit authorship are unchanged.
 
 ## What it does
 
-Turns a free Tesla Fleet Telemetry stream into Home Assistant MQTT auto-discovery. Every signal
-the car emits becomes a real entity: sensors, covers, climate, device_tracker.
-You also get command control of charging, climate, locks, windows, seat heaters, sentry and
-navigation.
+- **Home Assistant**: every signal the car streams becomes an MQTT discovery entity: sensors, covers, climate, locks and a device tracker.
+- **Commands**: charging, climate, locks, windows, frunk and trunk, seat heaters, Sentry and navigation. Commands for a car run one at a time, with per-car limits.
+- **TeslaMate**: a local Fleet API and streaming WebSocket. An unmodified TeslaMate logs from the stream instead of Tesla's billed API.
 
-It never wakes the car, and costs nothing beyond Tesla's free monthly credit.
-
-**TeslaMate users:** the gateway also serves a local Fleet API and streaming WebSocket, so an
-unmodified [TeslaMate](https://github.com/teslamate-org/teslamate) keeps logging. It polls you
-instead of Tesla's billed API, and Sentry mode stops mattering.
+Reading data never wakes the car. Commands do, and Tesla bills wakes and commands. Streaming alone usually stays within Tesla's free monthly credit.
 
 ## How it works
 
 ```
-   Tesla car ──mTLS──▶ fleet-telemetry ──ZMQ──▶ community-teslafleet
-                                     (brokerless)        │
-        ┌───────────────────────────────────────────────┤
-        ▼                                                ▼
-  Home Assistant  ◀── MQTT auto-discovery        Fleet API + WSS ──▶ TeslaMate
-  (all entities + commands)                      (free local polling, optional)
+Tesla car ──mTLS──▶ fleet-telemetry ──ZMQ──▶ community-teslafleet
+                                                │
+                    ┌───────────────────────────┴──────────────┐
+                    ▼                                          ▼
+          Home Assistant (MQTT)                    Fleet API + WSS ──▶ TeslaMate
+          entities and commands                    local, optional
 ```
-
-Tesla bills `vehicle_data` polling, and a Sentry-on car stays awake polling forever, so the bill
-climbs. Streaming is essentially free. Ingest is brokerless, so there's no broker to run.
 
 ## Requirements
 
-Tesla's side, either way:
-
-| | Why |
+| | |
 |---|---|
-| A Tesla developer app | Free at [developer.tesla.com](https://developer.tesla.com). |
-| A public domain with HTTPS | Tesla fetches your partner key; the car connects to a TLS hostname. |
-| A reachable telemetry endpoint | The car dials in. Any public port, or a Cloudflare Tunnel behind CGNAT. |
-| A Fleet-Telemetry-capable Tesla | Most cars on 2021 or newer firmware. |
-| Somewhere to run it | Docker or LXC, or HA OS/Supervised for the add-on. |
+| Tesla developer app | Free at [developer.tesla.com](https://developer.tesla.com). |
+| Public domain with HTTPS | Tesla fetches your public key from it. |
+| Open TCP port | The car connects to it from the internet. See [Exposing the endpoints](#exposing-the-endpoints). |
+| Fleet Telemetry support | Most cars on 2021 or newer firmware. |
+| A host | Home Assistant OS or Supervised for the add-on; otherwise Docker. |
 
-Then pick at least one:
+Then Home Assistant with an MQTT broker, TeslaMate, or both. The add-on finds Home Assistant's broker on its own.
 
-- **Home Assistant.** Needs HA and an MQTT broker. The add-on finds HA's broker for you.
-- **TeslaMate only.** Needs TeslaMate, and no HA or MQTT at all.
-
-The domain and public reachability are Tesla's requirements, not this project's, so they can only
-be eased. Can't host that? [Teslemetry](https://teslemetry.com) is simpler.
+The domain and the open port are Tesla's requirements. If you cannot meet them, [Teslemetry](https://teslemetry.com) is a hosted alternative.
 
 ## Install
 
-**HA add-on (recommended).** Settings → Add-ons → ⋮ → Repositories, add
-`https://github.com/LasseLegarth/community-teslafleet`, install Community TeslaFleet, and
-configure it. Requires HA OS or Supervised. On HA Container or Core, use standalone.
+**Home Assistant add-on.** Settings > Add-ons > Add-on Store > ⋮ > Repositories. Add `https://github.com/sqmagellan/community-teslafleet`, install Community TeslaFleet, and open it from the sidebar. The onboarding wizard covers the keypair, partner registration, key pairing and enrollment.
 
-**Standalone (Docker/LXC).** Brings up `fleet-telemetry`, `vehicle-command-proxy` and the gateway:
+The add-on installs separately from upstream's and does not take over its data.
+
+**Docker.** `docker-compose.yml` runs fleet-telemetry, the vehicle-command proxy and the gateway, built from this tree:
 
 ```bash
-cp .env.example .env        # domain, VIN, HA broker
+cp .env.example .env
 cp fleet-telemetry-config.example.json fleet-telemetry-config.json
 docker compose up -d
 ```
 
-Then run the onboarding wizard with `TGW_ONBOARD_ENABLED=true` on `:8099`. It generates the
-signing keypair, publishes and verifies the `.well-known` key, registers the partner account, and
-enrols telemetry.
+Set `TGW_ONBOARD_ENABLED=true` to run the wizard on port 8099.
 
-For TeslaMate, set `TESLA_API_HOST=http://<gateway-host>:4460` and
-`TESLA_WSS_HOST=ws://<gateway-host>:4460`. One port serves both the Fleet API and the legacy
-`/streaming/` WebSocket. Keep `TESLA_AUTH_HOST` and your token.
+**TeslaMate.** Set `TESLA_API_HOST=http://<gateway-host>:4460` and `TESLA_WSS_HOST=ws://<gateway-host>:4460`. Keep `TESLA_AUTH_HOST` and your token. Port 4460 has no authentication and serves live location, so keep it on your LAN.
 
-## Exposing the telemetry endpoint
+## Exposing the endpoints
 
-The car dials in from the internet, so pick one.
+Two things must be reachable from the internet.
 
-**Port forward.** Forward an external port to the same port on the host, and point DNS at your
-public IP. fleet-telemetry terminates TLS with a Let's Encrypt cert, so use certbot DNS-01 and
-skip opening port 80. Needs a public IP, router access, and no CGNAT.
+**Public key.** Tesla fetches `https://<domain>/.well-known/appspecific/com.tesla.3p.public-key.pem`. Any HTTPS host on your domain works. The add-on serves the file on port 8098, so a reverse proxy or a Cloudflare Tunnel can route that path to it.
 
-**Cloudflare Tunnel.** `cloudflared` connects outbound to Cloudflare, which publishes a hostname
-tunnelling in. No open ports, no static IP, works behind CGNAT. Cloudflare terminates TLS, so
-omit `ca` in the config. Less battle-tested, so confirm enrollment reaches `synced: true`.
+**Telemetry port.** The car connects with mutual TLS: it presents a client certificate that fleet-telemetry checks. A proxy that terminates TLS, including Cloudflare Tunnel, cannot carry that connection. Forward the port on your router to the host. Behind CGNAT, you need a host with a public IP that forwards raw TCP.
 
-Public IP and able to open a port? Forward it. Otherwise tunnel.
-
-Your partner public key is just a static file at
-`https://<domain>/.well-known/appspecific/com.tesla.3p.public-key.pem`. It can live anywhere on
-your domain, not necessarily this server.
+The server certificate can come from Let's Encrypt. DNS-01 validation avoids opening port 80. Tesla requires the full chain in the enrollment config, even for a publicly trusted certificate; the wizard asks for it.
 
 ## Units, privacy and backup
 
-Set `units.system` to `metric` or `imperial`. The VIN stays out of entity_ids, so you get
-`sensor.tesla_<name>_*`.
+Set `units.system` to `metric` or `imperial`. Entity IDs use the car's name, not the VIN: `sensor.tesla_<name>_*`.
 
-Everything stateful lives in `/data`. HA add-on backups include it; standalone means backing up
-the `./data` volume.
+The add-on keeps its state in `/data`, which Home Assistant backups include. With Docker, back up `./data`, `./proxy`, `./certs`, `.env` and your config files.
+
+## File permissions (Docker)
+
+The gateway runs as uid 65532. A credential file mounted with `*_FILE` must be readable by that uid or group. Use `chgrp 65532` and `chmod 640`. An unreadable file stops the gateway at startup instead of starting without the credential.
+
+## Support
+
+Report bugs in this repository's issues. Include the add-on or image version and the relevant log lines, with VINs and tokens removed.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Not affiliated with Tesla, Inc.
+MIT; see [LICENSE](LICENSE). Not affiliated with Tesla, Inc.

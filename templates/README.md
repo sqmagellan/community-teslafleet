@@ -1,10 +1,9 @@
 # Vehicle data templates
 
-The Fleet API emulator overlays **live telemetry** on top of a **captured real
-`vehicle_data` response**. Static fields (model, trim, color, wheels, gui units)
-come from the template; dynamic fields (location, battery, range, charge, …) are
-live. Without a template a minimal skeleton is used (works, but TeslaMate won't
-know the exact model).
+The emulated Fleet API lays live telemetry over a captured `vehicle_data`
+response. Fields that rarely change, such as trim, color, wheels and GUI units,
+come from the template. Location, battery, range and charge are live. Without a
+template, a minimal skeleton is used, and `car_type` comes from the VIN.
 
 ## Capture once
 
@@ -19,7 +18,7 @@ curl -s \
 
 The file may be the bare response object or `{"response": {...}}`. Both work.
 
-Re-capture after a major firmware update (or enroll the `Version` telemetry field
-to keep `car_version` live).
+Capture again after a major firmware update, or enroll the `Version` field to
+keep `car_version` live.
 
-Files here are git-ignored (they contain your VIN) except `*.example.json`.
+Files here are ignored by git, except `*.example.json`, because they contain your VIN.

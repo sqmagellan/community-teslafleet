@@ -1,12 +1,11 @@
-# community-teslafleet — example configuration.
-# Everything here can also be set via TGW_* environment variables (env wins).
-# Copy to config.yaml and edit. Two profiles:
-#   - HA-only:  fleetapi.enabled: false   (just Home Assistant)
-#   - Full:     fleetapi.enabled: true    (also serves TeslaMate)
+# community-teslafleet example configuration. Copy to config.yaml.
+# Every setting can also come from a TGW_* environment variable, which wins.
+#   Home Assistant only: fleetapi.enabled: false
+#   Also TeslaMate:      fleetapi.enabled: true
 
-# Brokerless ingest: fleet-telemetry's zmq dispatcher PUB-binds an address and
-# this gateway SUB-connects. In fleet-telemetry config, route V (and connectivity)
-# to a "zmq" dispatcher with transmit_decoded_records: true and addr tcp://0.0.0.0:5284.
+# Ingest needs no broker. In the fleet-telemetry config, send V and
+# connectivity records to a "zmq" dispatcher with transmit_decoded_records: true
+# and addr tcp://0.0.0.0:5284. The gateway connects to it.
 ingest:
   zmq_addr: "tcp://fleet-telemetry:5284"  # TGW_INGEST_ZMQ_ADDR
   namespace: "tesla_telemetry"            # TGW_INGEST_NAMESPACE (fleet-telemetry namespace)
@@ -18,40 +17,38 @@ fleetapi:
 http:
   listen: ":4460"                     # TGW_HTTP_LISTEN
 
-# Home Assistant MQTT auto-discovery. Broker may differ from the consume broker
-# (HA usually runs its own mosquitto). Empty broker reuses mqtt.broker.
+# Home Assistant MQTT discovery.
 ha:
   enabled: true                       # TGW_HA_ENABLED
-  broker: ""                          # TGW_HA_BROKER e.g. tcp://192.168.1.10:1883
+  broker: ""                          # TGW_HA_BROKER, e.g. tcp://homeassistant.local:1883
   username: ""
   password: ""
   discovery_prefix: "homeassistant"
   state_topic_base: "tgw"
 
-# Declare what UNITS your telemetry stream emits, so vehicle_data (always miles
-# for TeslaMate) is converted correctly. Flip to mi/mph if your firmware emits
-# imperial. Verify against the Tesla app once.
+# The units your car streams. vehicle_data for TeslaMate is always in miles,
+# so these must be right. Check once against the Tesla app.
 units:
   range_input: "km"      # km | mi
   speed_input: "kmh"     # kmh | mph
   odometer_input: "km"   # km | mi
 
-# Command relay: HA buttons/switches → signed Tesla commands via the
-# vehicle-command proxy. Needs a cmd-scoped OAuth token the gateway refreshes
-# itself. Requires ha.enabled. Generate the refresh_token once (vehicle_cmds scope).
+# Commands from Home Assistant, signed by the vehicle-command proxy. Requires
+# ha.enabled and a refresh token with the vehicle_cmds scope. The gateway keeps
+# the token current; the value here only seeds it.
 commands:
   enabled: false                          # TGW_COMMANDS_ENABLED
   proxy_url: "https://vehicle-command-proxy:4443"  # tesla/vehicle-command proxy
   auth_host: "https://auth.tesla.com"
   auth_path: "/oauth2/v3"
   client_id: ""                           # TGW_TESLA_CLIENT_ID
-  client_secret: ""                       # TGW_TESLA_CLIENT_SECRET (keep in secrets/.env)
-  refresh_token: ""                       # TGW_TESLA_REFRESH_TOKEN (cmd-scoped, secret)
+  client_secret: ""                       # TGW_TESLA_CLIENT_SECRET; prefer TGW_TESLA_CLIENT_SECRET_FILE
+  refresh_token: ""                       # TGW_TESLA_REFRESH_TOKEN; prefer the _FILE form
 
 state:
-  stale_after_seconds: 660       # no telemetry this long → may report asleep
+  stale_after_seconds: 660       # no telemetry this long: may report asleep
   online_grace_seconds: 60
-  report_asleep_when_idle: false # true = tell TeslaMate "asleep" when idle even if Sentry keeps the modem online
+  report_asleep_when_idle: false # true reports asleep when idle, even if Sentry keeps the modem online
 
 log_level: "info"        # debug | info | warn | error
 
@@ -59,4 +56,4 @@ vehicles:
   - vin: "5YJ3XXXXXXXXXXXXX"
     display_name: "My Tesla"
     template: "/templates/5YJ3XXXXXXXXXXXXX.json"   # captured vehicle_data (see templates/README.md)
-    # id / vehicle_id are derived from the VIN if omitted.
+    # id and vehicle_id come from the VIN when omitted.

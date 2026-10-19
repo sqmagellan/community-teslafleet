@@ -20,27 +20,26 @@
 </style>
 </head>
 <body>
-<h1>🚗 community-teslafleet — onboarding</h1>
-<p class="muted">Tesla requires a public domain and a publicly-reachable telemetry
-endpoint. This wizard automates and verifies what it can; some steps you do on Tesla's
-site / phone (clearly marked).</p>
+<h1>community-teslafleet onboarding</h1>
+<p class="muted">Tesla requires a public domain and a telemetry port the car can reach.
+The wizard does what it can and checks it. Some steps happen on Tesla's site or your phone.</p>
 
 {{if .State.Notice}}<p class="{{if hasPrefix .State.Notice "✓"}}ok-msg{{else}}err-msg{{end}}"><strong>{{.State.Notice}}</strong></p>{{end}}
 
 <div class="step {{if .State.SecretSet}}done{{end}}">
-  <h2>1 · Domain &amp; Tesla app
+  <h2>1 · Domain and Tesla app
     {{if .State.SecretSet}}<span class="badge ok">set</span>{{else}}<span class="badge todo">todo</span>{{end}}
   </h2>
-  <p class="muted">Create an app at <code>developer.tesla.com</code> and enter its domain
-  + client credentials. (Redirect URI &amp; scopes are in the docs.)</p>
+  <p class="muted">Create an app at <code>developer.tesla.com</code>, then enter its domain
+  and credentials.</p>
   <form method="post" action="{{.Base}}/domain">
-    <label>Public domain (optionally <code>host:port</code>)</label>
+    <label>Public domain, optionally <code>host:port</code></label>
     <input name="domain" value="{{.State.Domain}}" placeholder="telemetry.example.com">
     <label>Client ID</label>
     <input name="client_id" value="{{.State.ClientID}}" placeholder="xxxxxxxx-....">
-    <label>Client Secret {{if .State.SecretSet}}<span class="muted">(stored — leave blank to keep)</span>{{end}}</label>
+    <label>Client secret {{if .State.SecretSet}}<span class="muted">(saved; leave blank to keep it)</span>{{end}}</label>
     <input name="client_secret" type="password" placeholder="••••••••">
-    <label>Fleet API base for your region</label>
+    <label>Fleet API for your region</label>
     <input name="fleet_api" value="{{.State.FleetAPI}}" placeholder="https://fleet-api.prd.na.vn.cloud.tesla.com">
     <button type="submit">Save</button>
   </form>
@@ -50,29 +49,28 @@ site / phone (clearly marked).</p>
   <h2>2 · Signing keypair
     {{if .State.HasKeys}}<span class="badge ok">generated</span>{{else}}<span class="badge todo">todo</span>{{end}}
   </h2>
-  <p class="muted">Generates a P-256 keypair. The private key signs commands (used by the
-  vehicle-command proxy); the public key is published at the well-known path.</p>
+  <p class="muted">Generates a P-256 keypair. The private key signs commands. Tesla reads
+  the public key from your domain.</p>
   <form method="post" action="{{.Base}}/generate">
     {{if .State.HasKeys}}<label><input type="checkbox" name="confirm" value="replace" style="width:auto">
-    Replace the existing key (every car must be paired again)</label>{{end}}
+    Replace the key. Every car must be paired again.</label>{{end}}
     <button type="submit">{{if .State.HasKeys}}Regenerate{{else}}Generate keypair{{end}}</button>
   </form>
 </div>
 
 {{if .State.HasKeys}}
 <div class="step {{if and .State.LastProbe .State.LastProbe.OK}}done{{end}}">
-  <h2>3 · Publish the public key &amp; verify
+  <h2>3 · Publish the public key
     {{if and .State.LastProbe .State.LastProbe.OK}}<span class="badge ok">verified</span>{{else}}<span class="badge todo">todo</span>{{end}}
   </h2>
-  <p>Tesla must fetch your public key over HTTPS at exactly:</p>
+  <p>Tesla fetches your public key over HTTPS from:</p>
   <pre>https://{{if .State.Domain}}{{.State.Domain}}{{else}}&lt;domain&gt;{{end}}/.well-known/appspecific/com.tesla.3p.public-key.pem</pre>
-  <p><strong>This add-on already serves that file</strong> on port <code>8098</code> — just
-  route your domain's <code>/.well-known/</code> path to it (Cloudflare Tunnel, or your
-  reverse proxy). No need to host it by hand. Prefer to host it elsewhere? Download it
-  and put it on any HTTPS host on your domain.</p>
+  <p>The add-on serves this file on port <code>8098</code>. Route your domain's
+  <code>/.well-known/</code> path to it with a reverse proxy or Cloudflare Tunnel. You can
+  also download it and host it on any HTTPS server on your domain.</p>
   <p>
     <a href="{{.Base}}/public-key.pem"><button class="sec" type="button">Download public-key.pem</button></a>
-    <form method="post" action="{{.Base}}/probe"><button type="submit">Verify it's reachable</button></form>
+    <form method="post" action="{{.Base}}/probe"><button type="submit">Check it</button></form>
   </p>
   {{with .State.LastProbe}}
     <p class="{{if .OK}}ok-msg{{else}}err-msg{{end}}">{{if .OK}}✓{{else}}✗{{end}} {{.Message}}<br>
@@ -85,8 +83,8 @@ site / phone (clearly marked).</p>
   <h2>4 · Register partner account
     {{if .State.PartnerDone}}<span class="badge ok">done</span>{{else}}<span class="badge todo">todo</span>{{end}}
   </h2>
-  <p class="muted">Registers your domain with Tesla (Tesla fetches the public key above).
-  Do this after step 3 is green.</p>
+  <p class="muted">Registers your domain with Tesla, which fetches the key above. Do this
+  after step 3 passes.</p>
   <form method="post" action="{{.Base}}/register-partner"><button type="submit">Register partner</button></form>
 </div>
 
@@ -94,33 +92,31 @@ site / phone (clearly marked).</p>
   <h2>5 · Refresh token
     {{if .State.TokenSet}}<span class="badge ok">saved</span>{{else}}<span class="badge todo">todo</span>{{end}}
   </h2>
-  <p class="muted">Paste a cmd-scoped refresh token (generate via Tesla's auth-code flow
-  with scopes <code>offline_access vehicle_device_data vehicle_cmds
-  vehicle_charging_cmds</code>). The browser-based "Login with Tesla" flow needs a public
-  redirect URL matching your dev app — paste is the reliable path.</p>
+  <p class="muted">Paste a refresh token from Tesla's authorization-code flow with the scopes
+  <code>offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds</code>.</p>
   <form method="post" action="{{.Base}}/token">
-    <input name="refresh_token" type="password" placeholder="EU_xxx…">
+    <input name="refresh_token" type="password" placeholder="Refresh token">
     <button type="submit">Save token</button>
   </form>
 </div>
 
 <div class="step">
-  <h2>6 · Pair virtual key per car
+  <h2>6 · Pair the key with each car
     {{if .State.Vehicles}}<span class="badge ok">{{len .State.Vehicles}} car(s)</span>{{else}}<span class="badge todo">todo</span>{{end}}
   </h2>
-  <p class="muted">List your cars, then <strong>open the pairing link on a phone</strong>
-  with the Tesla app to add the key to each car (you must do this per vehicle).</p>
+  <p class="muted">List your cars, then open the pairing link on a phone with the Tesla app.
+  Do this once for each car.</p>
   <form method="post" action="{{.Base}}/vehicles"><button type="submit">List vehicles</button></form>
-  {{if .PairingURL}}<p>Pairing link (open on phone): <a href="{{.PairingURL}}">{{.PairingURL}}</a></p>{{end}}
-  {{if .State.Vehicles}}<ul>{{range .State.Vehicles}}<li><code>{{.VIN}}</code> — {{.DisplayName}}</li>{{end}}</ul>{{end}}
+  {{if .PairingURL}}<p>Pairing link, for your phone: <a href="{{.PairingURL}}">{{.PairingURL}}</a></p>{{end}}
+  {{if .State.Vehicles}}<ul>{{range .State.Vehicles}}<li><code>{{.VIN}}</code>: {{.DisplayName}}</li>{{end}}</ul>{{end}}
 </div>
 
 <div class="step {{if .State.Profile}}done{{end}}">
-  <h2>6b · Enrollment — how often signals are fetched
+  <h2>6b · Enrollment: how often the car sends signals
     {{if .State.Profile}}<span class="badge ok">{{.State.Profile}}</span>{{else}}<span class="badge todo">todo</span>{{end}}
   </h2>
-  <p class="muted">Pick how much/how often to stream. <strong>eco</strong> = cheapest,
-  <strong>balanced</strong> = good live data + low cost, <strong>live</strong> = most detailed.</p>
+  <p class="muted"><strong>eco</strong> is the cheapest. <strong>balanced</strong> gives good
+  live data at low cost. <strong>live</strong> is the most detailed.</p>
   <form method="post" action="{{.Base}}/enrollment">
     <label>Profile</label>
     <select name="profile">
@@ -128,21 +124,21 @@ site / phone (clearly marked).</p>
     </select>
     <label>Telemetry port</label>
     <input name="port" value="{{if .State.Port}}{{.State.Port}}{{else}}443{{end}}" placeholder="443">
-    <label>Certificate chain of the telemetry server (PEM, leaf first). Tesla requires it,
-    even for a Let's Encrypt certificate. Paste the whole fullchain.pem. Leave blank to use
-    the configured file, or else the chain already saved.</label>
+    <label>Certificate chain of the telemetry server, PEM, leaf first. Tesla requires it,
+    even for a Let's Encrypt certificate. Paste all of fullchain.pem, or leave blank to use
+    the configured file or the saved chain.</label>
     <textarea name="ca" rows="4" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
-    <button type="submit">Generate &amp; save config</button>
+    <button type="submit">Save config</button>
   </form>
-  <p class="muted">Estimate (current selection): ~{{.Estimate.SignalsLow}}–{{.Estimate.SignalsHigh}}
-  signals/month across {{.Estimate.EnrolledFields}} signals. Most setups stay within Tesla's
-  free monthly credit (≈ $0). Wakes &amp; commands are billed separately.</p>
+  <p class="muted">Estimate: about {{.Estimate.SignalsLow}}–{{.Estimate.SignalsHigh}} signals a
+  month across {{.Estimate.EnrolledFields}} fields. Most setups stay within Tesla's free
+  monthly credit. Wakes and commands are billed separately.</p>
 </div>
 
 <div class="step">
   <h2>7 · Enroll telemetry <span class="badge todo">last</span></h2>
-  <p class="muted">Sends your fleet_telemetry_config (set intervals on the Enrollment page)
-  to each paired car. The car adopts it within a minute.</p>
+  <p class="muted">Sends the config from step 6b to each paired car. The car adopts it
+  within a minute.</p>
   <form method="post" action="{{.Base}}/enroll"><button type="submit">Enroll telemetry</button></form>
 </div>
 

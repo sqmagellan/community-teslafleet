@@ -1,20 +1,18 @@
-# Standalone self-host example for community-teslafleet.
-# Assumes you already run Tesla's fleet-telemetry with an MQTT sink
-# (topic_base must match mqtt.topic_base below).
+# Gateway only, for a host that already runs Tesla's fleet-telemetry with a
+# zmq dispatcher (see config.example.yaml). docker-compose.yml runs the full stack.
 #
-# HA-only users: set TGW_FLEETAPI_ENABLED=false and point TGW_HA_BROKER at your HA broker.
-# TeslaMate users: keep fleetapi enabled and set TeslaMate's TESLA_API_HOST=http://<host>:4460
+# Home Assistant only: set TGW_FLEETAPI_ENABLED=false.
+# TeslaMate: set its TESLA_API_HOST to http://<host>:4460.
 
 services:
   gateway:
-    # This fork publishes no image. ghcr.io/lasselegarth/community-teslafleet is
-    # upstream's, which lacks the fixes listed in FORK.md, so build this tree.
+    # Or image: ghcr.io/sqmagellan/community-teslafleet:<version>
     build: .
     restart: unless-stopped
     ports:
-      # Fleet API + WebSocket for TeslaMate. No authentication, and it serves
-      # live GPS, so bind it to loopback. Use "4460:4460" only if TeslaMate
-      # runs on another host, and then keep the port off the internet.
+      # Fleet API for TeslaMate. No authentication, and it serves live
+      # location, so it binds to loopback. Use "4460:4460" only if TeslaMate
+      # runs on another host, and keep it off the internet.
       - "127.0.0.1:4460:4460"
     environment:
       - TGW_INGEST_ZMQ_ADDR=tcp://fleet-telemetry:5284

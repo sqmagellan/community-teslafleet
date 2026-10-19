@@ -1,97 +1,75 @@
 configuration:
   telemetry_port:
-    name: Telemetry port (car connects here)
+    name: Telemetry port
     description: >-
-      The port the bundled fleet-telemetry server listens on for your car's
-      stream — the car dials IN to this port from the internet. You must make
-      it reachable: forward this port on your router to Home Assistant, OR use
-      a Cloudflare Tunnel. Default 4443. Pick another port only if 4443 is
-      taken or your ISP blocks it; the onboarding wizard tells the car which
+      The port your car connects to from the internet. Forward it on your
+      router to Home Assistant. Default 4443. The wizard tells the car which
       port to use.
   namespace:
     name: Telemetry namespace
     description: >-
-      Must exactly match the "namespace" set in your fleet-telemetry server
-      config. It prefixes the stream topics. If you didn't change it on the
-      server, leave this as tesla_telemetry.
+      Must match the fleet-telemetry namespace. Leave it as tesla_telemetry.
   units_system:
     name: Display units
     description: >-
-      How values are shown in Home Assistant. metric = km, °C, bar.
-      imperial = mi, °F, psi. Purely cosmetic — pick what you read on the
-      dashboard. (The car always streams imperial internally; the gateway
-      converts.)
+      metric shows km, °C and bar. imperial shows mi, °F and psi. Display
+      only.
   device_identifier:
     name: Entity naming
     description: >-
-      How HA entity IDs are built. name (recommended) = uses a slug from the
-      car's name, so the VIN never appears in entity IDs (better privacy):
-      e.g. sensor.tesla_serenity_battery. vin = uses the VIN in entity IDs.
-      The VIN is always stored as the device serial number either way.
+      name builds entity IDs from the car's name, such as
+      sensor.tesla_serenity_battery, and keeps the VIN out of them. vin uses
+      the VIN. The VIN is the device serial number either way.
   telemetry_profile:
     name: Streaming frequency
     description: >-
-      The profile the onboarding wizard's Enrollment step starts with. It
-      takes effect when you save and enroll from the wizard; changing it here
-      does not re-enroll the car. eco = slowest, cheapest. balanced
-      (recommended) = good live feel within Tesla's free monthly credit.
-      live = near-real-time, more signals. custom = leave the wizard's own
-      choice alone.
+      The profile the wizard's enrollment step starts with. Changing it here
+      does not re-enroll the car. eco is the cheapest. balanced stays within
+      Tesla's free monthly credit for most setups. live sends the most
+      signals. custom leaves the wizard's choice alone.
   fleetapi_enabled:
-    name: Serve TeslaMate (Fleet API)
+    name: Serve TeslaMate
     description: >-
-      Turn ON only if you also run TeslaMate and want it to log from this
-      gateway for free. It exposes a local Fleet API + WebSocket on port 4460
-      that TeslaMate polls (never wakes the car). Leave OFF for a
-      Home-Assistant-only setup.
+      Turn on only if you run TeslaMate. It serves a local Fleet API and
+      WebSocket on port 4460 for TeslaMate to read.
   vins:
-    name: Vehicle VINs (optional filter)
+    name: VIN filter
     description: >-
-      Leave EMPTY for normal use. The VIN is read automatically from the
-      telemetry stream (and the onboarding wizard fetches your cars from
-      Tesla), so you never need to type it. Only fill this in if you have
-      several Teslas on the same stream and want to publish just some of them —
-      a comma-separated allow-list, e.g. 5YJ3...086,7SAY...123.
+      Leave empty. Cars are found from the stream. To publish only some cars,
+      list their VINs, separated by commas.
   commands_enabled:
-    name: Enable HA → car commands
+    name: Car commands
     description: >-
-      Turn ON to control the car FROM Home Assistant (charging, climate,
-      locks, frunk/trunk, etc.). Requires completing the onboarding wizard
-      (Tesla token + virtual-key pairing) first, and the Tesla client ID
-      below. Leave OFF for read-only / data-only, the safe default for a
-      first test.
+      Lets Home Assistant control charging, climate, locks, frunk, trunk and
+      more. Finish the onboarding wizard and set the client ID first. Off is
+      read-only.
   tesla_client_id:
     name: Tesla client ID
     description: >-
-      The client ID of your app on developer.tesla.com. Required when
-      commands are on.
+      The client ID of your app at developer.tesla.com. Required for commands.
   tesla_client_secret:
     name: Tesla client secret
     description: >-
-      The client secret of the same app. Partner registration needs it, and
-      token refreshes send it when it is set.
+      The client secret of the same app. Partner registration needs it.
   tesla_refresh_token:
-    name: Tesla refresh token (first start only)
+    name: Tesla refresh token
     description: >-
-      Only needed if you have not pasted a token in the onboarding wizard.
-      Tesla replaces the token on every use and the gateway keeps the
-      current one in /data, so this value goes stale after the first start.
-      You can clear it once commands work.
+      Only if you did not paste a token in the wizard. Tesla replaces the
+      token on every use, and the gateway keeps the current one in /data. You
+      can clear this once commands work.
   fleet_api_url:
     name: Fleet API URL
     description: >-
-      Tesla's Fleet API base for your region, for example
-      https://fleet-api.prd.na.vn.cloud.tesla.com (North America) or
-      https://fleet-api.prd.eu.vn.cloud.tesla.com (Europe). Needed for
-      partner registration in the wizard and for the Navigate entity.
+      Your region's Fleet API:
+      https://fleet-api.prd.na.vn.cloud.tesla.com for North America and Asia
+      Pacific, https://fleet-api.prd.eu.vn.cloud.tesla.com for Europe. Needed
+      for partner registration and navigation.
   log_level:
-    name: Log verbosity
+    name: Log level
     description: >-
-      How much detail in the add-on log. info (recommended) for normal use.
-      debug when troubleshooting (very chatty — shows each signal). warn /
-      error for quiet operation once everything works.
+      info for normal use. debug logs every signal. warn or error once
+      everything works.
 network:
   "4460/tcp": >-
-    Local Fleet API + WebSocket for TeslaMate. Only needed if "Serve TeslaMate"
-    is ON and TeslaMate runs on another host. LAN-only — never port-forward
-    this to the internet.
+    Fleet API for TeslaMate. Map it only if TeslaMate runs on another host.
+    LAN only; never forward it to the internet.
