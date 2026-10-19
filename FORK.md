@@ -776,6 +776,20 @@ keys forward from the last document it published for the car. The key list is
 built from the command catalog, so a new stateful entity is covered too. A key
 that has never been seen is still left out.
 
+## Fix, 2026-10-18
+
+### `fix/enroll-review`: enroll and wizard gaps found while preparing upstream PR #5
+
+- `enroll.Wrap` passed any payload with a `config` key unchanged, including
+  `{"config": null}` and an envelope with no VINs, which is the same proxy panic
+  it exists to prevent. A wrapped payload now needs fields and VINs.
+- Saving the wizard's enrollment step again with the chain field blank, and no
+  `CAFile` configured, dropped the saved `ca`, so step 7 refused the new file.
+  The saved chain is kept.
+- The wizard's Fleet API URL was read without the store lock, and clearing the
+  field did not clear it. It is read under the lock, and an empty field restores
+  the `commands.fleet_api_url` fallback.
+
 ## Verification, which lives outside this repo
 
 The deploy gate used here is not in this repository and is not proposed upstream:

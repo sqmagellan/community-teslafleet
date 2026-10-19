@@ -28,6 +28,18 @@ func TestWrap(t *testing.T) {
 	if _, err := Wrap([]byte(`{"hostname":"h"}`), []string{"VIN1"}); err == nil {
 		t.Error("a config with no fields was accepted")
 	}
+	for _, bad := range []string{
+		`{"vins":["VIN1"],"config":null}`,
+		`{"vins":["VIN1"],"config":{"hostname":"h"}}`,
+		`{"hostname":"h","fields":null}`,
+	} {
+		if _, err := Wrap([]byte(bad), []string{"VIN1"}); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+	if _, err := Wrap([]byte(`{"config":{"fields":{"Soc":{}}}}`), []string{"VIN1"}); !errors.Is(err, ErrNoVINs) {
+		t.Errorf("wrapped with no VINs: %v", err)
+	}
 }
 
 func TestHasCA(t *testing.T) {

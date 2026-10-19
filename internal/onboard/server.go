@@ -153,14 +153,24 @@ func NewServer(opts Options, log *slog.Logger) (*Server, error) {
 
 // client builds a Tesla API client from config + the wizard's stored creds.
 func (s *Server) client() *teslaClient {
-	return newTeslaClient(s.opts.AuthHost, s.opts.AuthPath, s.fleetAPI(),
-		s.store.st.ClientID, s.store.clientSecret())
+	s.store.mu.Lock()
+	fleetAPI, clientID := s.fleetAPILocked(), s.store.st.ClientID
+	s.store.mu.Unlock()
+	return newTeslaClient(s.opts.AuthHost, s.opts.AuthPath, fleetAPI,
+		clientID, s.store.clientSecret())
 }
 
 // fleetAPI is the regional Fleet API base entered in step 1, falling back to
 // commands.fleet_api_url. The add-on had no way to set the latter, so step 4
 // could never pass there (upstream issue #3).
 func (s *Server) fleetAPI() string {
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	return s.fleetAPILocked()
+}
+
+// fleetAPILocked is fleetAPI for a caller that holds s.store.mu.
+func (s *Server) fleetAPILocked() string {
 	if s.store.st.FleetAPI != "" {
 		return s.store.st.FleetAPI
 	}
@@ -300,9 +310,9 @@ func (s *Server) saveDomain(w http.ResponseWriter, r *http.Request) {
 	s.store.mu.Lock()
 	s.store.st.Domain = strings.TrimSpace(r.FormValue("domain"))
 	s.store.st.ClientID = strings.TrimSpace(r.FormValue("client_id"))
-	if api := strings.TrimRight(strings.TrimSpace(r.FormValue("fleet_api")), "/"); api != "" {
-		s.store.st.FleetAPI = api
-	}
+	// The field is prefilled, so an empty value means the user cleared it and
+	// wants the config fallback back.
+	s.store.st.FleetAPI = strings.TrimRight(strings.TrimSpace(r.FormValue("fleet_api")), "/")
 	if sec := strings.TrimSpace(r.FormValue("client_secret")); sec != "" {
 		if err := s.store.saveSecret(sec); err == nil {
 			s.store.st.SecretSet = true
@@ -440,6 +450,12 @@ func (s *Server) saveEnrollment(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.render(w, r, "✗ "+err.Error())
 		return
+	}
+	if ca == "" {
+		// The field always renders empty. Keep the chain already saved.
+		if old, err := os.ReadFile(s.opts.EnrollFile); err == nil {
+			ca = enroll.CA(old)
+		}
 	}
 	ftc.CA = ca
 	b, err := json.MarshalIndent(ftc, "", "  ")

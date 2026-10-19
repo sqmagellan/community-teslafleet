@@ -81,6 +81,11 @@ func TestServer_FleetAPIFromTheWizard(t *testing.T) {
 	if got := s.fleetAPI(); got != "https://fleet-api.prd.na.vn.cloud.tesla.com" {
 		t.Errorf("fleetAPI() after step 1 = %q", got)
 	}
+	s.Handler().ServeHTTP(httptest.NewRecorder(), form(http.MethodPost, "/domain",
+		url.Values{"domain": {"t.example.com"}, "fleet_api": {""}}))
+	if got := s.fleetAPI(); got != "https://from-config" {
+		t.Errorf("fleetAPI() after clearing the field = %q", got)
+	}
 }
 
 const testCA = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
@@ -152,6 +157,13 @@ func TestServer_SaveEnrollmentKeepsThePastedChain(t *testing.T) {
 	}
 	if !enroll.HasCA(b) {
 		t.Errorf("saved config lost the chain: %s", b)
+	}
+
+	// The field renders empty, so saving again without pasting keeps the chain.
+	s.Handler().ServeHTTP(httptest.NewRecorder(), form(http.MethodPost, "/enrollment",
+		url.Values{"profile": {"balanced"}, "port": {"443"}}))
+	if b, _ := os.ReadFile(ftcPath); !enroll.HasCA(b) {
+		t.Errorf("saving again dropped the chain: %s", b)
 	}
 
 	rr := httptest.NewRecorder()
