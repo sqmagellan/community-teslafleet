@@ -102,9 +102,10 @@ func profileTier(profile, cat string) string {
 	return "off"
 }
 
-// FTC is a fleet_telemetry_config ready to POST (ca omitted → publicly-trusted cert).
+// FTC is a fleet_telemetry_config. Wrap it with Wrap before posting it.
 type FTC struct {
 	Hostname    string                    `json:"hostname"`
+	CA          string                    `json:"ca,omitempty"`
 	Port        int                       `json:"port"`
 	PreferTyped bool                      `json:"prefer_typed"`
 	Fields      map[string]map[string]int `json:"fields"`

@@ -7,12 +7,14 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +23,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/LasseLegarth/community-teslafleet/internal/config"
+	"github.com/LasseLegarth/community-teslafleet/internal/enroll"
 	"github.com/LasseLegarth/community-teslafleet/internal/store"
 )
 
@@ -566,15 +569,23 @@ func (r *Relay) wakeAndWait(vin string) error {
 
 // Enroll pushes a fleet_telemetry_config to the vehicle-command proxy using the
 // relay's own OAuth token (no contention with the command relay's token). payload
-// is the raw fleet_telemetry_config JSON. A non-2xx response (including its body)
-// is returned as an error.
+// is the raw fleet_telemetry_config JSON, bare or already wrapped in
+// {"vins", "config"}; a bare config is sent to the configured VINs. A non-2xx
+// response (including its body) is returned as an error.
 func (r *Relay) Enroll(payload []byte) error {
+	body, err := enroll.Wrap(payload, r.vinList())
+	if errors.Is(err, enroll.ErrNoVINs) {
+		return fmt.Errorf("enroll needs an explicit VIN list: set vehicles/TGW_VINS")
+	}
+	if err != nil {
+		return err
+	}
 	tok, err := r.tm.token()
 	if err != nil {
 		return fmt.Errorf("token: %w", err)
 	}
 	urlStr := fmt.Sprintf("%s/api/1/vehicles/fleet_telemetry_config", r.proxy)
-	req, err := http.NewRequest(http.MethodPost, urlStr, bytes.NewReader(payload))
+	req, err := http.NewRequest(http.MethodPost, urlStr, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -590,6 +601,16 @@ func (r *Relay) Enroll(payload []byte) error {
 		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(rb)))
 	}
 	return nil
+}
+
+// vinList returns the configured VINs in a stable order.
+func (r *Relay) vinList() []string {
+	out := make([]string, 0, len(r.knownVINs))
+	for vin := range r.knownVINs {
+		out = append(out, vin)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (r *Relay) post(urlStr string, body map[string]any) error {

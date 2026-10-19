@@ -4,6 +4,9 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -38,6 +41,7 @@ type Options struct {
 type State struct {
 	Domain      string         `json:"domain"`
 	ClientID    string         `json:"client_id"`
+	FleetAPI    string         `json:"fleet_api,omitempty"`
 	HasKeys     bool           `json:"has_keys"`
 	SecretSet   bool           `json:"secret_set"`
 	PartnerDone bool           `json:"partner_done"`
@@ -128,8 +132,28 @@ func NewServer(opts Options, log *slog.Logger) (*Server, error) {
 
 // client builds a Tesla API client from config + the wizard's stored creds.
 func (s *Server) client() *teslaClient {
-	return newTeslaClient(s.opts.AuthHost, s.opts.AuthPath, s.opts.FleetAPI,
-		s.store.st.ClientID, s.store.clientSecret())
+	s.store.mu.Lock()
+	fleetAPI, clientID := s.fleetAPILocked(), s.store.st.ClientID
+	s.store.mu.Unlock()
+	return newTeslaClient(s.opts.AuthHost, s.opts.AuthPath, fleetAPI,
+		clientID, s.store.clientSecret())
+}
+
+// fleetAPI is the regional Fleet API base entered in step 1, falling back to
+// commands.fleet_api_url. The add-on has no way to set the latter, so step 4
+// could never pass there (issue #3).
+func (s *Server) fleetAPI() string {
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	return s.fleetAPILocked()
+}
+
+// fleetAPILocked is fleetAPI for a caller that holds s.store.mu.
+func (s *Server) fleetAPILocked() string {
+	if s.store.st.FleetAPI != "" {
+		return s.store.st.FleetAPI
+	}
+	return s.opts.FleetAPI
 }
 
 func (s *Server) Handler() http.Handler {
@@ -217,6 +241,9 @@ func (s *Server) saveDomain(w http.ResponseWriter, r *http.Request) {
 	s.store.mu.Lock()
 	s.store.st.Domain = strings.TrimSpace(r.FormValue("domain"))
 	s.store.st.ClientID = strings.TrimSpace(r.FormValue("client_id"))
+	// The field is prefilled, so an empty value means the user cleared it and
+	// wants the config fallback back.
+	s.store.st.FleetAPI = strings.TrimRight(strings.TrimSpace(r.FormValue("fleet_api")), "/")
 	if sec := strings.TrimSpace(r.FormValue("client_secret")); sec != "" {
 		if err := s.store.saveSecret(sec); err == nil {
 			s.store.st.SecretSet = true
@@ -270,7 +297,7 @@ func (s *Server) registerPartner(w http.ResponseWriter, r *http.Request) {
 	s.store.mu.Lock()
 	domain, clientID := s.store.st.Domain, s.store.st.ClientID
 	s.store.mu.Unlock()
-	if domain == "" || clientID == "" || s.store.clientSecret() == "" || s.opts.FleetAPI == "" {
+	if domain == "" || clientID == "" || s.store.clientSecret() == "" || s.fleetAPI() == "" {
 		s.render(w, r, "✗ Need domain, client_id, client_secret and a Fleet API URL first.")
 		return
 	}
@@ -343,6 +370,18 @@ func (s *Server) saveEnrollment(w http.ResponseWriter, r *http.Request) {
 	s.store.mu.Unlock()
 
 	ftc := enroll.Generate(profile, domain, port)
+	ca, err := chain(r.FormValue("ca"))
+	if err != nil {
+		s.render(w, r, "✗ "+err.Error())
+		return
+	}
+	if ca == "" {
+		// The field always renders empty. Keep the chain already saved.
+		if old, err := os.ReadFile(s.opts.EnrollFile); err == nil {
+			ca = enroll.CA(old)
+		}
+	}
+	ftc.CA = ca
 	b, err := json.MarshalIndent(ftc, "", "  ")
 	if err != nil {
 		s.render(w, r, "✗ Could not build config: "+err.Error())
@@ -362,6 +401,25 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "✗ No enrollment file at "+s.opts.EnrollFile+" — set intervals on the Enrollment page first.")
 		return
 	}
+	if !enroll.HasCA(payload) {
+		s.render(w, r, "✗ The saved config has no certificate chain (ca). Tesla rejects it without one. Paste the chain in step 6b and save again.")
+		return
+	}
+	s.store.mu.Lock()
+	vins := make([]string, 0, len(s.store.st.Vehicles))
+	for _, v := range s.store.st.Vehicles {
+		vins = append(vins, v.VIN)
+	}
+	s.store.mu.Unlock()
+	body, err := enroll.Wrap(payload, vins)
+	if errors.Is(err, enroll.ErrNoVINs) {
+		s.render(w, r, "✗ No cars to enroll. Run \"List vehicles\" in step 6 first.")
+		return
+	}
+	if err != nil {
+		s.render(w, r, "✗ "+err.Error())
+		return
+	}
 	rt := s.readTokenCache()
 	if rt == "" {
 		s.render(w, r, "✗ Save a refresh token first.")
@@ -372,11 +430,24 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "✗ Token refresh failed: "+err.Error())
 		return
 	}
-	if err := postEnroll(s.opts.ProxyURL, at, payload); err != nil {
+	if err := postEnroll(s.opts.ProxyURL, at, body); err != nil {
 		s.render(w, r, "✗ Enroll failed: "+err.Error())
 		return
 	}
 	s.render(w, r, "✓ Telemetry config sent. The car adopts it within a minute (poll synced).")
+}
+
+// chain checks the pasted certificate chain for the enrollment config. Empty
+// is allowed here so a config can still be saved; enroll refuses it later.
+func chain(pasted string) (string, error) {
+	pemText := strings.TrimSpace(pasted)
+	if pemText == "" {
+		return "", nil
+	}
+	if b, _ := pem.Decode([]byte(pemText)); b == nil || b.Type != "CERTIFICATE" {
+		return "", fmt.Errorf("the certificate chain is not PEM (expected -----BEGIN CERTIFICATE-----)")
+	}
+	return pemText + "\n", nil
 }
 
 func (s *Server) readTokenCache() string {
