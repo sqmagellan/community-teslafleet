@@ -21,7 +21,7 @@ name: community-teslafleet
 
 services:
   fleet-telemetry:
-    image: tesla/fleet-telemetry:latest
+    image: tesla/fleet-telemetry:v0.9.5@sha256:7cb5f429210128b8edc5aac1e403589315893106f4c5a3ff85cb32213e2f8e37
     restart: unless-stopped
     command: ["-config=/etc/fleet-telemetry/config.json"]
     ports:
@@ -31,7 +31,7 @@ services:
       - ./certs:/etc/certs:ro                              # fullchain.pem + privkey.pem
 
   vehicle-command-proxy:
-    image: tesla/vehicle-command:latest
+    image: tesla/vehicle-command:0.4.1@sha256:e8adac679bf5e72790c588e620bb4a7992a8f80d4c3bd98da6d1129f59daf482
     restart: unless-stopped
     environment:
       - TESLA_HTTP_PROXY_TLS_CERT=/config/tls/cert.pem

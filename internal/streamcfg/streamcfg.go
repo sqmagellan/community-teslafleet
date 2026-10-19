@@ -39,8 +39,8 @@ type TLS struct {
 // Build assembles the server config. connectivity + V records are routed to ZMQ
 // (the gateway's brokerless ingest); alerts/errors go to the fleet-telemetry log.
 // transmit_decoded_records=true makes payloads protojson, which the ingest parser
-// expects. When cert and key are both set, fleet-telemetry terminates TLS itself
-// (port-forward + Let's Encrypt); otherwise it runs plaintext behind a tunnel.
+// expects. cert and key are the server certificate fleet-telemetry presents to
+// the car; without them it has no TLS config and will not start.
 func Build(namespace, zmqBind, cert, key string, port int) ServerConfig {
 	c := ServerConfig{
 		Host:                   "0.0.0.0",

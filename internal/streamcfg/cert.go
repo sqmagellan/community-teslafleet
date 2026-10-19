@@ -19,10 +19,10 @@ import (
 // not already exist, returning whether it generated a new pair.
 //
 // fleet-telemetry is mTLS-only and panics without a TLS config, so it always needs a
-// server cert. In Cloudflare-Tunnel mode the tunnel terminates the car's public TLS
-// and forwards to fleet-telemetry over the loopback, so a self-signed cert on the
-// internal listener is sufficient. Port-forward setups instead point TLSCert/TLSKey
-// at a publicly-trusted cert (e.g. Let's Encrypt) the car validates directly.
+// server cert. The car connects to fleet-telemetry directly, because a proxy that
+// terminates TLS would drop its client certificate. A self-signed cert without the
+// public hostname only lets fleet-telemetry start; the car will not accept it.
+// Real setups point TLSCert/TLSKey at a cert for the domain, such as Let's Encrypt.
 func EnsureSelfSigned(certPath, keyPath, hostname string) (bool, error) {
 	if fileExists(certPath) && fileExists(keyPath) {
 		return false, nil

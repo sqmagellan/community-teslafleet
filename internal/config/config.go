@@ -79,9 +79,9 @@ type Stream struct {
 	// ZMQAddr the embedded fleet-telemetry dispatcher binds; the gateway SUB-connects
 	// to the same address on localhost.
 	ZMQBind string `yaml:"zmq_bind"`
-	// TLSCert/TLSKey: when both are set, the embedded fleet-telemetry terminates TLS
-	// itself (port-forward + Let's Encrypt). Leave empty for Cloudflare-Tunnel mode,
-	// where the tunnel provides public TLS and fleet-telemetry runs plaintext behind it.
+	// TLSCert/TLSKey: the certificate the embedded fleet-telemetry presents to the
+	// car, which must cover the public domain. When empty, a self-signed cert lets
+	// fleet-telemetry start, but the car will not accept it.
 	TLSCert string `yaml:"tls_cert"`
 	TLSKey  string `yaml:"tls_key"`
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Certificate warning.** Without a configured TLS certificate, the gateway warns on every start that the car will not accept the self-signed one. It used to call this "tunnel mode", but a tunnel cannot carry the car's connection.
+- **Pinned Tesla images.** The add-on image and `docker-compose.yml` use fleet-telemetry v0.9.5 and vehicle-command 0.4.1 by tag and digest, so a rebuild ships the same binaries. They used `latest`.
+
 ## 0.2.0: first release of the maintained fork (2026-10-18)
 
 Changes since upstream's last add-on image, 0.1.8.
