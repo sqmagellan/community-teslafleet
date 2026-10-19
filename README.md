@@ -39,7 +39,7 @@ The domain and the open port are Tesla's requirements. If you cannot meet them, 
 
 ## Install
 
-**Home Assistant add-on.** Settings > Add-ons > Add-on Store > ⋮ > Repositories. Add `https://github.com/sqmagellan/community-teslafleet`, install Community TeslaFleet, and open it from the sidebar. The onboarding wizard covers the keypair, partner registration, key pairing and enrollment.
+**Home Assistant add-on.** Settings > Add-ons > Add-on Store > ⋮ > Repositories. Add `https://github.com/sqmagellan/community-teslafleet`, install Community TeslaFleet, and open it from the sidebar. The add-on reads its certificate from Home Assistant's `/ssl` folder, where the Let's Encrypt and DuckDNS add-ons put theirs. The onboarding wizard covers the keypair, partner registration, key pairing and enrollment.
 
 The add-on installs separately from upstream's and does not take over its data.
 

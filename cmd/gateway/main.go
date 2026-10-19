@@ -87,7 +87,7 @@ func main() {
 			} else if gen {
 				log.Info("generated self-signed TLS cert for fleet-telemetry", "cert", cert)
 			}
-			log.Warn("no TLS certificate configured (stream.tls_cert, stream.tls_key): fleet-telemetry is using a self-signed certificate that does not cover your domain, so the car will not accept it",
+			log.Warn("no TLS certificate configured: fleet-telemetry is using a self-signed certificate that does not cover your domain, so the car will not accept it. Set tls_cert and tls_key (add-on, files in /ssl) or stream.tls_cert and stream.tls_key",
 				"cert", cert)
 		}
 		// Generate the fleet-telemetry server config from our config every boot, so

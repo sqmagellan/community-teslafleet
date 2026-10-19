@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.2.1: the add-on can use a real certificate (2026-10-18)
 
-- **Certificate warning.** Without a configured TLS certificate, the gateway warns on every start that the car will not accept the self-signed one. It used to call this "tunnel mode", but a tunnel cannot carry the car's connection.
+- **Add-on certificate.** New `tls_cert` and `tls_key` options read a certificate from Home Assistant's `/ssl` folder, `fullchain.pem` and `privkey.pem` by default. The wizard sends that chain to Tesla without a paste. The add-on had no way to set a certificate, so the car could not connect to it.
+- **Certificate warning.** Without a certificate, or with files that do not load as a certificate and key, the gateway warns on every start that the car will not accept the self-signed fallback. It used to call this "tunnel mode", but a tunnel cannot carry the car's connection.
 - **Pinned Tesla images.** The add-on image and `docker-compose.yml` use fleet-telemetry v0.9.5 and vehicle-command 0.4.1 by tag and digest, so a rebuild ships the same binaries. They used `latest`.
 
 ## 0.2.0: first release of the maintained fork (2026-10-18)

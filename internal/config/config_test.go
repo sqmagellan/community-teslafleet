@@ -1,10 +1,18 @@
 package config
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestApplyEnv_VINsParsing(t *testing.T) {
@@ -134,6 +142,80 @@ func TestApplyOptions(t *testing.T) {
 	}
 	if len(c.Vehicles) != 2 || c.Vehicles[1].VIN != "VINY" {
 		t.Errorf("vins not parsed: %+v", c.Vehicles)
+	}
+}
+
+// tls_cert and tls_key name files in /ssl; a missing or broken pair keeps the
+// self-signed fallback instead of pointing fleet-telemetry at nothing.
+func TestApplyOptionsCert(t *testing.T) {
+	ssl := t.TempDir()
+	old := sslDir
+	sslDir = ssl
+	t.Cleanup(func() { sslDir = old })
+	opts := filepath.Join(t.TempDir(), "options.json")
+	t.Setenv("TGW_OPTIONS_FILE", opts)
+	load := func(js string) Config {
+		if err := os.WriteFile(opts, []byte(js), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c := Defaults()
+		applyOptions(&c)
+		return c
+	}
+
+	if c := load(`{"tls_cert":"fullchain.pem","tls_key":"privkey.pem"}`); c.Stream.TLSCert != "" {
+		t.Errorf("missing files were used: %q", c.Stream.TLSCert)
+	}
+	for _, f := range []string{"fullchain.pem", "privkey.pem"} {
+		if err := os.WriteFile(filepath.Join(ssl, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c := load(`{"tls_cert":"fullchain.pem","tls_key":"privkey.pem"}`); c.Stream.TLSCert != "" {
+		t.Errorf("files that are not a cert and key were used: %q", c.Stream.TLSCert)
+	}
+	writeTestPair(t, filepath.Join(ssl, "fullchain.pem"), filepath.Join(ssl, "privkey.pem"))
+	c := load(`{"tls_cert":"fullchain.pem","tls_key":"privkey.pem"}`)
+	if c.Stream.TLSCert != filepath.Join(ssl, "fullchain.pem") || c.Stream.TLSKey != filepath.Join(ssl, "privkey.pem") {
+		t.Errorf("cert = %q, key = %q", c.Stream.TLSCert, c.Stream.TLSKey)
+	}
+	abs := filepath.Join(ssl, "fullchain.pem")
+	if c := load(`{"tls_cert":"` + abs + `","tls_key":"privkey.pem"}`); c.Stream.TLSCert != abs {
+		t.Errorf("absolute path changed: %q", c.Stream.TLSCert)
+	}
+	if c := load(`{"tls_cert":"fullchain.pem"}`); c.Stream.TLSCert != "" {
+		t.Errorf("a cert without a key was used: %q", c.Stream.TLSCert)
+	}
+	c = Defaults()
+	c.Stream.TLSCert, c.Stream.TLSKey = "/etc/certs/a.pem", "/etc/certs/a.key"
+	optCert(map[string]any{"tls_cert": "fullchain.pem", "tls_key": "privkey.pem"}, &c)
+	if c.Stream.TLSCert != "/etc/certs/a.pem" {
+		t.Errorf("add-on defaults replaced a configured pair: %q", c.Stream.TLSCert)
+	}
+}
+
+// writeTestPair writes a self-signed P-256 certificate and its key as PEM.
+func writeTestPair(t *testing.T, certPath, keyPath string) {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "telemetry.example.com"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &k.PublicKey, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kd, err := x509.MarshalECPrivateKey(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kd}), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

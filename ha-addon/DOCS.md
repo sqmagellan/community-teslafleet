@@ -9,6 +9,7 @@ Open the add-on from the sidebar to run the onboarding wizard. It covers the key
 - **A Tesla developer app**, free at developer.tesla.com, for the client ID and secret.
 - **A public domain with HTTPS.** Tesla fetches your public key from it. The add-on serves the key on port 8098; route your domain's `/.well-known/` path there.
 - **An open telemetry port.** The car connects to it with mutual TLS. Forward the port on your router to Home Assistant. Cloudflare Tunnel cannot carry this connection.
+- **A certificate for your domain in `/ssl`**, such as one from the Let's Encrypt or DuckDNS add-on. The add-on reads `fullchain.pem` and `privkey.pem` by default, and the wizard sends the chain to Tesla. Without one, the add-on falls back to a self-signed certificate the car will not accept. Restart the add-on after the certificate renews.
 
 ## Options
 
@@ -25,6 +26,7 @@ Open the add-on from the sidebar to run the onboarding wizard. It covers the key
 | `tesla_client_id`, `tesla_client_secret` | Your developer app's credentials. |
 | `tesla_refresh_token` | First start only, if you did not paste a token in the wizard. |
 | `fleet_api_url` | Your region's Fleet API, for example `https://fleet-api.prd.na.vn.cloud.tesla.com`. |
+| `tls_cert`, `tls_key` | Certificate and key files in `/ssl`. Defaults `fullchain.pem` and `privkey.pem`. |
 | `log_level` | `debug`, `info`, `warn` or `error`. |
 
 ## Ports

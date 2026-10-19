@@ -64,6 +64,17 @@ configuration:
       https://fleet-api.prd.na.vn.cloud.tesla.com for North America and Asia
       Pacific, https://fleet-api.prd.eu.vn.cloud.tesla.com for Europe. Needed
       for partner registration and navigation.
+  tls_cert:
+    name: TLS certificate
+    description: >-
+      The certificate chain for your domain, a file name in /ssl. The Let's
+      Encrypt and DuckDNS add-ons write fullchain.pem. The car rejects the
+      self-signed fallback. Restart the add-on after the certificate renews.
+  tls_key:
+    name: TLS key
+    description: >-
+      The private key for that certificate, a file name in /ssl. Default
+      privkey.pem.
   log_level:
     name: Log level
     description: >-

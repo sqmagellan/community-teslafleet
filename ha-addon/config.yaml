@@ -5,7 +5,7 @@
 #
 # `version` must match the image tag. The release workflow checks it on a tag.
 name: Community TeslaFleet
-version: "0.2.0"
+version: "0.2.1"
 slug: community_teslafleet
 description: Tesla Fleet Telemetry for Home Assistant, with an optional Fleet API for TeslaMate
 url: https://github.com/sqmagellan/community-teslafleet
@@ -20,6 +20,9 @@ services:
 panel_icon: mdi:car-electric
 ingress: true               # serve the onboarding wizard in the HA sidebar
 ingress_port: 8099
+map:
+  - type: ssl               # tls_cert and tls_key are read from /ssl
+    read_only: true
 ports:
   "4443/tcp": 4443          # telemetry, mutual TLS; must be reachable from the internet
   "8098/tcp": 8098          # public key for /.well-known/
@@ -38,6 +41,8 @@ options:
   fleetapi_enabled: false
   vins: ""
   commands_enabled: false
+  tls_cert: fullchain.pem
+  tls_key: privkey.pem
   log_level: info
 schema:
   namespace: str
@@ -52,4 +57,6 @@ schema:
   tesla_client_secret: password?
   tesla_refresh_token: password?
   fleet_api_url: url?
+  tls_cert: str?
+  tls_key: str?
   log_level: list(debug|info|warn|error)

@@ -10,10 +10,12 @@
 package config
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -477,12 +479,42 @@ func applyOptions(c *Config) {
 	optStr(o, "tesla_client_secret", &c.Commands.ClientSecret)
 	optStr(o, "tesla_refresh_token", &c.Commands.RefreshToken)
 	optStr(o, "fleet_api_url", &c.Commands.FleetAPIURL)
+	optCert(o, c)
 	if v, ok := o["telemetry_profile"].(string); ok && v != "" && v != "custom" {
 		c.Onboard.DefaultProfile = v
 	}
 	if v, ok := o["vins"].(string); ok && strings.TrimSpace(v) != "" && len(c.Vehicles) == 0 {
 		c.Vehicles = parseVINs(v, "")
 	}
+}
+
+// sslDir is where Home Assistant mounts its shared certificates for an add-on
+// with `map: ssl`. The Let's Encrypt and DuckDNS add-ons write them there.
+var sslDir = "/ssl"
+
+// optCert sets the telemetry certificate from the add-on's tls_cert and tls_key,
+// which name files in sslDir (an absolute path is used as is). The pair must
+// load as a certificate and matching key; otherwise the stream keeps its
+// self-signed fallback and a warning names the paths, so a missing or broken
+// certificate does not stop fleet-telemetry. A pair already set in config.yaml
+// wins over the add-on defaults.
+func optCert(o map[string]any, c *Config) {
+	cert, _ := o["tls_cert"].(string)
+	key, _ := o["tls_key"].(string)
+	if cert == "" || key == "" || c.Stream.TLSCert != "" || c.Stream.TLSKey != "" {
+		return
+	}
+	if !filepath.IsAbs(cert) {
+		cert = filepath.Join(sslDir, cert)
+	}
+	if !filepath.IsAbs(key) {
+		key = filepath.Join(sslDir, key)
+	}
+	if _, err := tls.LoadX509KeyPair(cert, key); err != nil {
+		slog.Warn("add-on certificate not usable; using a self-signed certificate", "tls_cert", cert, "tls_key", key, "err", err)
+		return
+	}
+	c.Stream.TLSCert, c.Stream.TLSKey = cert, key
 }
 
 func optStr(o map[string]any, key string, dst *string) {
