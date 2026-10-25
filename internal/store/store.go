@@ -87,7 +87,7 @@ type Snapshot struct {
 	LastV        time.Time
 	// MovingAt is when VehicleSpeed last arrived at or above movingSpeed; zero
 	// if it has not since this process started. See isDriving.
-	MovingAt     time.Time
+	MovingAt time.Time
 	// Restored is true while every field came from the state file and the car
 	// has sent nothing since this process started.
 	Restored bool
