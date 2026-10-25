@@ -25,7 +25,7 @@ func Derive(s Snapshot, cfg config.State, now time.Time) Derived {
 	// downtime it never sends the update, so trusting those values would pin it
 	// driving or charging, and online, until its next drive.
 	if !s.Restored {
-		d.Driving, d.Charging = isDriving(s), isCharging(s)
+		d.Driving, d.Charging = isDriving(s, now), isCharging(s)
 	}
 
 	grace := time.Duration(cfg.OnlineGraceSeconds) * time.Second
@@ -50,19 +50,67 @@ func Derive(s Snapshot, cfg config.State, now time.Time) Derived {
 	return d
 }
 
-func isDriving(s Snapshot) bool {
-	// Gear only. VehicleSpeed is deliberately NOT used: Tesla stops streaming it
-	// at a small non-zero residual when parking (e.g. 0.6 mph) and never sends a
-	// clean 0, so a speed>0 test stays true forever after a drive — which pinned
-	// the car "driving/online" and the speed sensor non-zero while parked. Gear
-	// reliably streams P on park.
-	if g, ok := s.Field(FieldGear); ok {
-		switch GearString(g.Value) {
-		case "D", "R", "N":
-			return true
-		}
+// movingSpeed is the VehicleSpeed (raw telemetry units, mph or km/h) that counts
+// as the car moving. It sits well above the ~0.6 mph residual Tesla leaves
+// behind when parking. movingHold is how long the car still counts as driving
+// after the last such reading, so a red light does not split a drive in two.
+const (
+	movingSpeed = 3.0
+	movingHold  = 2 * time.Minute
+)
+
+func isDriving(s Snapshot, now time.Time) bool {
+	// Gear first. A plain speed>0 test is NOT used: Tesla stops streaming
+	// VehicleSpeed at a small non-zero residual when parking (e.g. 0.6 mph) and
+	// never sends a clean 0, so it stayed true forever after a drive — which
+	// pinned the car "driving/online" and the speed sensor non-zero while parked.
+	// Gear reliably streams P on park.
+	g, hasGear := s.Field(FieldGear)
+	if hasGear && isMovingGear(GearString(g.Value)) {
+		return true
+	}
+	// Backstop: the car sometimes never sends Gear D. On 2026-10-25 a car woken
+	// by a climate command reported P and then drove 3 miles with Gear still P,
+	// while VehicleSpeed and Location streamed; TeslaMate saw a parked car and
+	// missed the drive. So a real speed reading that arrived AFTER the last gear
+	// reading also counts. A P sent after it (the car parking) still wins, and
+	// so does an explicit charging verdict.
+	if s.MovingAt.IsZero() || (hasGear && !s.MovingAt.After(g.UpdatedAt)) || isCharging(s) {
+		return false
+	}
+	if now.Sub(s.MovingAt) <= movingHold {
+		return true
+	}
+	// Telemetry is sent on change only, so a steady speed can go quiet for
+	// longer than the hold. While the last speed is still a moving one and the
+	// car is still streaming something, it is still driving. Stopping always
+	// passes through a reading below movingSpeed, and a car that drops off the
+	// network stops refreshing LastV.
+	sp, ok := s.Num(FieldVehicleSpeed)
+	return ok && sp >= movingSpeed && !s.LastV.IsZero() && now.Sub(s.LastV) <= movingHold
+}
+
+func isMovingGear(g string) bool {
+	switch g {
+	case "D", "R", "N":
+		return true
 	}
 	return false
+}
+
+// ShiftState is the gear to report to consumers (Fleet API shift_state, the
+// streaming CSV). It is the car's own Gear, except while only the speed
+// backstop says the car is driving: Gear then still reads P or nothing, and
+// TeslaMate treats a P frame as parked, so report D.
+func ShiftState(s Snapshot, d Derived) string {
+	g := ""
+	if fv, ok := s.Field(FieldGear); ok {
+		g = GearString(fv.Value)
+	}
+	if d.Driving && !isMovingGear(g) {
+		return "D"
+	}
+	return g
 }
 
 func isCharging(s Snapshot) bool {

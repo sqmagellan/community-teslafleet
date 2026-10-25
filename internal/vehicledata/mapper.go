@@ -64,14 +64,8 @@ func Build(snap store.Snapshot, d store.Derived, veh config.Vehicle, tmpl *Templ
 		ds["heading"] = int(h)
 	}
 	// shift_state + speed: only when actually driving (Tesla reports null parked).
-	if g, ok := snap.Field(store.FieldGear); ok {
-		if gs := store.GearString(g.Value); gs != "" {
-			ds["shift_state"] = gs
-		} else {
-			ds["shift_state"] = nil
-		}
-	}
 	if d.Driving {
+		ds["shift_state"] = store.ShiftState(snap, d)
 		if sp, ok := snap.Num(store.FieldVehicleSpeed); ok {
 			ds["speed"] = int(round1(SpeedToMph(sp, units.SpeedInput)))
 		}

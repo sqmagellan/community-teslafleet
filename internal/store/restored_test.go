@@ -70,7 +70,7 @@ func TestInvalidFieldIsAbsent(t *testing.T) {
 	if _, ok := snap.Field(FieldGear); ok {
 		t.Error("Field reports a value the car marked invalid")
 	}
-	if isDriving(snap) {
+	if isDriving(snap, s.Now()) {
 		t.Error("an invalid Gear still reads as driving")
 	}
 }

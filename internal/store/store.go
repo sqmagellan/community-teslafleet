@@ -85,6 +85,9 @@ type Snapshot struct {
 	Connectivity string
 	ConnAt       time.Time
 	LastV        time.Time
+	// MovingAt is when VehicleSpeed last arrived at or above movingSpeed; zero
+	// if it has not since this process started. See isDriving.
+	MovingAt     time.Time
 	// Restored is true while every field came from the state file and the car
 	// has sent nothing since this process started.
 	Restored bool
@@ -226,6 +229,7 @@ type vehicle struct {
 	connectivity string
 	connAt       time.Time
 	lastV        time.Time
+	movingAt     time.Time
 	restored     bool
 }
 
@@ -295,6 +299,11 @@ func (s *Store) SetField(vin, field string, value any) {
 	now := s.now()
 	v.mu.Lock()
 	v.fields[field] = FieldValue{Value: value, UpdatedAt: now, Count: v.fields[field].Count + 1}
+	if field == FieldVehicleSpeed {
+		if sp, ok := ToFloat(value); ok && sp >= movingSpeed {
+			v.movingAt = now
+		}
+	}
 	v.lastV = now
 	v.restored = false
 	v.mu.Unlock()
@@ -334,6 +343,7 @@ func (s *Store) Snapshot(vin string) (Snapshot, bool) {
 		Connectivity: v.connectivity,
 		ConnAt:       v.connAt,
 		LastV:        v.lastV,
+		MovingAt:     v.movingAt,
 		Restored:     v.restored,
 	}, true
 }

@@ -132,7 +132,7 @@ func TestIsDriving_IgnoresResidualSpeed(t *testing.T) {
 			s.SetField("VIN", FieldGear, tc.gear)
 			s.SetField("VIN", FieldVehicleSpeed, tc.speed)
 			snap, _ := s.Snapshot("VIN")
-			if got := isDriving(snap); got != tc.want {
+			if got := isDriving(snap, s.Now()); got != tc.want {
 				t.Errorf("isDriving(gear=%s, speed=%v) = %v, want %v", tc.gear, tc.speed, got, tc.want)
 			}
 		})

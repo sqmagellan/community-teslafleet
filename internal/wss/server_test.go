@@ -58,3 +58,20 @@ func TestBuildCSV_OrderAndUnits(t *testing.T) {
 		t.Errorf("field[2] odometer = %q, want ~6213.7x", parts[2])
 	}
 }
+
+// TestBuildCSV_SpeedBackstopSendsD: the stream must carry D too, or TeslaMate,
+// suspended after a P poll, never wakes up for the drive.
+func TestBuildCSV_SpeedBackstopSendsD(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	st := store.New("V")
+	st.SetClock(func() time.Time { return now.Add(-60 * time.Second) })
+	st.SetField("V", store.FieldGear, "ShiftStateP")
+	st.SetClock(func() time.Time { return now.Add(-2 * time.Second) })
+	st.SetField("V", store.FieldVehicleSpeed, float64(50))
+	snap, _ := st.Snapshot("V")
+	d := store.Derive(snap, config.State{OnlineGraceSeconds: 60, StaleAfterSeconds: 660}, now)
+	parts := strings.Split(buildCSV(snap, d, config.Units{RangeInput: "km", SpeedInput: "kmh", OdometerInput: "km"}, now), ",")
+	if parts[9] != "D" || parts[1] != "31" {
+		t.Errorf("shift_state=%q speed=%q, want D and 31", parts[9], parts[1])
+	}
+}

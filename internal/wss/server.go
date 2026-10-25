@@ -229,9 +229,7 @@ func buildCSV(snap store.Snapshot, d store.Derived, units config.Units, now time
 		f[7] = strconv.FormatFloat(lng, 'f', 6, 64)
 	}
 	f[8] = strconv.Itoa(drivePower(snap, d)) // power (numeric → real online)
-	if g, ok := snap.Field(store.FieldGear); ok {
-		f[9] = store.GearString(g.Value)
-	}
+	f[9] = store.ShiftState(snap, d)
 	if v, ok := snap.Num(store.FieldRatedRange); ok {
 		f[10] = strconv.Itoa(int(vehicledata.RangeToMiles(v, units.RangeInput) + 0.5))
 	}

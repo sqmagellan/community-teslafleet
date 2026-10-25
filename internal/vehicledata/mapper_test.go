@@ -222,3 +222,27 @@ func TestBuild_FastChargerAndCable(t *testing.T) {
 		})
 	}
 }
+
+// TestBuild_SpeedBackstopReportsD: when the car streams speed but Gear is stuck
+// on P, vehicle_data must say D, or TeslaMate suspends logging mid-drive.
+func TestBuild_SpeedBackstopReportsD(t *testing.T) {
+	vin := "5YJ3TESTVIN000001"
+	now := time.Unix(1_800_000_000, 0)
+	st := store.New(vin)
+	st.SetClock(func() time.Time { return now.Add(-60 * time.Second) })
+	st.SetField(vin, store.FieldGear, "ShiftStateP")
+	st.SetClock(func() time.Time { return now.Add(-3 * time.Second) })
+	st.SetField(vin, store.FieldVehicleSpeed, float64(50)) // km/h
+	snap, _ := st.Snapshot(vin)
+	d := store.Derive(snap, config.State{OnlineGraceSeconds: 60, StaleAfterSeconds: 660}, now)
+	tmpl, _ := LoadTemplate("")
+	units := config.Units{RangeInput: "km", SpeedInput: "kmh", OdometerInput: "km"}
+	resp := Build(snap, d, config.Vehicle{VIN: vin, ID: 1, VehicleID: 1}, tmpl, units, now)
+	ds, _ := resp["drive_state"].(map[string]any)
+	if ds["shift_state"] != "D" {
+		t.Errorf("shift_state = %v, want D", ds["shift_state"])
+	}
+	if ds["speed"] != 31 {
+		t.Errorf("speed = %v, want 31 (50 km/h)", ds["speed"])
+	}
+}
