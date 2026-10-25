@@ -335,6 +335,11 @@ func buildState(snap store.Snapshot, d store.Derived, units config.Units) map[st
 			}
 		}
 	}
+	// While only the speed backstop says the car is driving, Gear still reads
+	// P. Report the gear TeslaMate is given so HA agrees with its own speed.
+	if d.Driving {
+		s["shift_state"] = store.ShiftState(snap, d)
+	}
 
 	// Climate on/off + sentry bool (used by the climate entity + sentry switch).
 	if fv, ok := snap.Field(store.FieldIsClimateOn); ok {

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Drives with a stuck gear.** A car can report P and then drive with its gear never leaving P while speed and location keep streaming. TeslaMate saw a parked car and lost the whole drive. A speed of 3 or more that arrives after the last gear reading now counts as driving, and the car is reported in D. A later P or an active charge ends it.
+- **Drives with a stuck gear.** A car can report P and then drive with its gear never leaving P while speed and location keep streaming. TeslaMate saw a parked car and lost the whole drive. A speed of 3 or more that arrives after the last gear reading now counts as driving, and the car is reported in D. A later P or an active charge ends it. Home Assistant's shift state sensor reports D too.
 
 ## 0.2.1: the add-on can use a real certificate (2026-10-18)
 

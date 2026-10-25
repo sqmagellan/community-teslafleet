@@ -62,7 +62,7 @@ const (
 func isDriving(s Snapshot, now time.Time) bool {
 	// Gear first. A plain speed>0 test is NOT used: Tesla stops streaming
 	// VehicleSpeed at a small non-zero residual when parking (e.g. 0.6 mph) and
-	// never sends a clean 0, so it stayed true forever after a drive — which
+	// never sends a clean 0, so it stayed true forever after a drive, which
 	// pinned the car "driving/online" and the speed sensor non-zero while parked.
 	// Gear reliably streams P on park.
 	g, hasGear := s.Field(FieldGear)
