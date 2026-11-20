@@ -31,7 +31,11 @@ type Server struct {
 	relay      *commands.Relay                  // optional: for self-enroll (may be nil)
 	enrollFile string                           // path to fleet_telemetry_config JSON
 	ingest     IngestHealth                     // optional: telemetry link state (may be nil)
-	log        *slog.Logger
+
+	// optional: per-car fleet_telemetry_config check (may be nil)
+	telemetryCfg TelemetryConfigStatus
+
+	log *slog.Logger
 }
 
 // IngestHealth is the slice of the telemetry consumer that readiness needs.
@@ -46,6 +50,14 @@ type IngestHealth interface {
 // freshness but cannot distinguish "link down" from "fleet asleep", so it does
 // not claim to.
 func (s *Server) SetIngestHealth(h IngestHealth) { s.ingest = h }
+
+// TelemetryConfigStatus reports the per-car fleet_telemetry_config check.
+type TelemetryConfigStatus interface {
+	Status() string
+}
+
+// SetTelemetryConfigStatus attaches the config check so /healthz reports it.
+func (s *Server) SetTelemetryConfigStatus(t TelemetryConfigStatus) { s.telemetryCfg = t }
 
 func NewServer(st *store.Store, cfg *config.Config, tmpls map[string]*vehicledata.Template, relay *commands.Relay, enrollFile string, log *slog.Logger) *Server {
 	return &Server{
@@ -190,6 +202,12 @@ type Health struct {
 	// CommandsProxy is "ok" once the vehicle-command proxy has answered over
 	// TLS, or the last error reaching it. Empty when commands are off.
 	CommandsProxy string `json:"commands_proxy,omitempty"`
+	// TelemetryConfig is "ok" when every car still holds its
+	// fleet_telemetry_config, else "<VIN tail>: <verdict>" per car (missing,
+	// limit_reached, expired, ...). Empty before the first check or when the
+	// check is off. Like the command fields it does not change Status: a car
+	// without a config streams nothing, which this probe cannot tell from sleep.
+	TelemetryConfig string `json:"telemetry_config,omitempty"`
 }
 
 // health computes readiness.
@@ -216,6 +234,9 @@ func (s *Server) health() Health {
 	if s.relay != nil {
 		h.CommandsCredential = s.relay.CredentialStatus()
 		h.CommandsProxy = s.relay.ProxyStatus()
+	}
+	if s.telemetryCfg != nil {
+		h.TelemetryConfig = s.telemetryCfg.Status()
 	}
 	if s.ingest != nil {
 		connected := s.ingest.Connected()

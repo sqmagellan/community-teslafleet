@@ -47,6 +47,8 @@ commands:
   client_id: ""                           # TGW_TESLA_CLIENT_ID
   client_secret: ""                       # TGW_TESLA_CLIENT_SECRET; prefer TGW_TESLA_CLIENT_SECRET_FILE
   refresh_token: ""                       # TGW_TESLA_REFRESH_TOKEN; prefer the _FILE form
+  fleet_api_url: ""                       # TGW_TESLA_FLEET_API_URL; regional Fleet API, e.g. https://fleet-api.prd.na.vn.cloud.tesla.com
+  telemetry_config_check_hours: 24        # TGW_TELEMETRY_CONFIG_CHECK_HOURS; daily config check (needs fleet_api_url; 0 = off)
 
 state:
   stale_after_seconds: 660       # no telemetry this long: may report asleep

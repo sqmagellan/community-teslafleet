@@ -5,6 +5,7 @@ package commands
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -742,6 +743,12 @@ func (r *Relay) VehicleData(vin string) (map[string]any, error) {
 //
 // A GET is free; it is not a vehicle_data request and does not wake the car.
 func (r *Relay) TelemetryConfig(vin string) (map[string]any, error) {
+	return r.TelemetryConfigContext(context.Background(), vin)
+}
+
+// TelemetryConfigContext is TelemetryConfig with a context that cancels the
+// request (the periodic config check stops with the gateway).
+func (r *Relay) TelemetryConfigContext(ctx context.Context, vin string) (map[string]any, error) {
 	if r.fleetAPI == "" {
 		return nil, fmt.Errorf("fleet_api_url not set")
 	}
@@ -753,7 +760,7 @@ func (r *Relay) TelemetryConfig(vin string) (map[string]any, error) {
 		return nil, fmt.Errorf("token: %w", err)
 	}
 	urlStr := fmt.Sprintf("%s/api/1/vehicles/%s/fleet_telemetry_config", r.fleetAPI, url.PathEscape(vin))
-	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
 		return nil, err
 	}

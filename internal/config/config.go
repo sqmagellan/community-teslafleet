@@ -152,6 +152,11 @@ type Commands struct {
 	// are NOT end-to-end-signed and therefore not routed by the vehicle-command
 	// proxy (navigation_request). Leave empty to hide those entities.
 	FleetAPIURL string `yaml:"fleet_api_url"`
+	// TelemetryConfigCheckHours is how often each car's fleet_telemetry_config
+	// is read back to confirm it still exists (Tesla deletes it when the
+	// account hits its billing limit, and it expires). Needs FleetAPIURL; the
+	// GET is free and does not wake the car. 0 turns the check off.
+	TelemetryConfigCheckHours int `yaml:"telemetry_config_check_hours"`
 	// PINs for PIN-gated commands. An entity is only exposed when its PIN is set.
 	ValetPIN      string `yaml:"valet_pin"`
 	SpeedLimitPIN string `yaml:"speed_limit_pin"`
@@ -324,6 +329,9 @@ func Defaults() Config {
 			AuthPath:   "/oauth2/v3",
 			TokenCache: "/data/refresh_token",
 			EnrollFile: "/data/ftc.json",
+
+			TelemetryConfigCheckHours: 24,
+
 			// Sized from a week of traffic on two cars (2026-09-17 to 09-24).
 			// Outside one runaway automation, the busiest hour had 5 of a
 			// single command and 6 wakes. The runaway sent 20 window commands
@@ -574,6 +582,7 @@ func applyEnv(c *Config) {
 	setStr(&c.Commands.ProxyCAFile, "TGW_TESLA_PROXY_CA_FILE")
 	setStr(&c.Commands.ProxyServerName, "TGW_TESLA_PROXY_SERVER_NAME")
 	setBool(&c.Commands.ProxyInsecureSkipVerify, "TGW_TESLA_PROXY_INSECURE_SKIP_VERIFY")
+	setInt(&c.Commands.TelemetryConfigCheckHours, "TGW_TELEMETRY_CONFIG_CHECK_HOURS")
 	setStr(&c.Commands.AuthHost, "TGW_TESLA_AUTH_HOST")
 	setStr(&c.Commands.AuthPath, "TGW_TESLA_AUTH_PATH")
 	setStr(&c.Commands.ClientID, "TGW_TESLA_CLIENT_ID")

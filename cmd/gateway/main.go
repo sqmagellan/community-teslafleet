@@ -28,6 +28,7 @@ import (
 	"github.com/LasseLegarth/community-teslafleet/internal/store"
 	"github.com/LasseLegarth/community-teslafleet/internal/streamcfg"
 	"github.com/LasseLegarth/community-teslafleet/internal/supervisor"
+	"github.com/LasseLegarth/community-teslafleet/internal/telemetrywatch"
 	"github.com/LasseLegarth/community-teslafleet/internal/vehicledata"
 	"github.com/LasseLegarth/community-teslafleet/internal/wss"
 )
@@ -309,6 +310,14 @@ func main() {
 	if cfg.FleetAPI.Enabled {
 		api := fleetapi.NewServer(st, &cfg, tmpls, relay, cfg.Commands.EnrollFile, log)
 		api.SetIngestHealth(consumer) // /healthz reports the real ingest link
+		if relay != nil && cfg.Commands.FleetAPIURL != "" && cfg.Commands.TelemetryConfigCheckHours > 0 && len(vins) > 0 {
+			// Tesla deletes a car's telemetry config at the billing limit, and a
+			// config expires; both look like a sleeping car from here. Only the
+			// configured cars are checked: auto-discovered ones have no entry.
+			w := telemetrywatch.New(relay.TelemetryConfigContext, vins, log)
+			go w.Run(ctx, 2*time.Minute, time.Duration(cfg.Commands.TelemetryConfigCheckHours)*time.Hour)
+			api.SetTelemetryConfigStatus(w)
+		}
 		router := api.Routes()
 		wssSrv := wss.NewServer(st, &cfg, log)
 		router.Handle("/streaming/*", wssSrv.Handler())
