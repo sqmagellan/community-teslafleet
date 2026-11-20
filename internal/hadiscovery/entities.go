@@ -92,9 +92,10 @@ var numItems = []numItem{
 	{store.FieldOutsideTemp, "outside_temp", "Outside temperature", qTemp, "temperature", "", "measurement", "", 1},
 	{store.FieldChargerVoltage, "charger_voltage", "Charger voltage", qNone, "voltage", "V", "measurement", "diagnostic", 1},
 	{store.FieldChargeAmps, "charger_current", "Charger current", qNone, "current", "A", "measurement", "diagnostic", 0},
-	// TimeToFullCharge: raw value (didn't stream in capture); modeled as a duration
-	// in hours for now. TODO: verify the stream unit (minutes vs hours) and consider
-	// a timestamp (now + remaining), which is how tesla_fleet/tesla_custom model it.
+	// TimeToFullCharge streams in HOURS (verified 2026-11-20 on a live 11 kW
+	// charge: the value fell 0.0167 a minute, and 0.083 at 07:10Z matched the
+	// 07:15Z finish TeslaMate logged). A timestamp (now + remaining), as
+	// tesla_fleet/tesla_custom model it, is still an option.
 	{store.FieldTimeToFullCharge, "time_to_full", "Time to full charge", qNone, "duration", "h", "measurement", "", -1},
 	{store.FieldTpmsFL, "tpms_fl", "TPMS front left", qPressure, "pressure", "", "measurement", "diagnostic", 1},
 	{store.FieldTpmsFR, "tpms_fr", "TPMS front right", qPressure, "pressure", "", "measurement", "diagnostic", 1},
