@@ -359,8 +359,12 @@ func buildState(snap store.Snapshot, d store.Derived, units config.Units) map[st
 	if b, ok := snap.Bool(store.FieldChargePortDoorOpen); ok {
 		s["charge_port"] = b
 	}
-	// Plugged in: cable present or charge-port latch engaged.
-	s["plugged_in"] = pluggedIn(snap)
+	// Plugged in: cable present or charge-port latch engaged. With no latch
+	// reading at all the key is left out, so HA shows unknown rather than a
+	// confident "unplugged".
+	if fv, ok := snap.Field(store.FieldChargePortLatch); ok && fv.Value != nil {
+		s["plugged_in"] = pluggedIn(snap)
+	}
 
 	// Doors composite + aggregate.
 	if dm := snap.BoolMap(store.FieldDoorState); dm != nil {

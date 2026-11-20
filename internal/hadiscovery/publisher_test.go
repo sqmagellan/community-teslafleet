@@ -125,9 +125,9 @@ func TestBinarySensorValueTemplate(t *testing.T) {
 			// is what let the lock sensor ship inverted: the template rendered
 			// payload_on for locked==true, so a locked car read as unlocked in HA.
 			//
-			// default(false) tolerates a key the gateway omits from snapshots that
-			// carry no data for it; it does not change what a present value renders.
-			wantTpl := "{{ 'true' if " + tc.wantInTpl + " | default(false) else 'false' }}"
+			// An absent key renders None (HA: unknown), not 'false'; a present
+			// value renders as before.
+			wantTpl := "{% set v = " + tc.wantInTpl + " | default(none) %}{{ none if v is none else ('true' if v else 'false') }}"
 			if tpl != wantTpl {
 				t.Errorf("value_template = %q, want %q", tpl, wantTpl)
 			}

@@ -39,6 +39,9 @@ units:
 commands:
   enabled: false                          # TGW_COMMANDS_ENABLED
   proxy_url: "https://vehicle-command-proxy:4443"  # tesla/vehicle-command proxy
+  proxy_ca_file: ""                       # TGW_TESLA_PROXY_CA_FILE; the proxy's cert (or its CA), checked with its host name
+  proxy_server_name: ""                   # TGW_TESLA_PROXY_SERVER_NAME; host name to check when proxy_url uses an IP
+  proxy_insecure_skip_verify: false       # TGW_TESLA_PROXY_INSECURE_SKIP_VERIFY; escape hatch only, warns on every start
   auth_host: "https://auth.tesla.com"
   auth_path: "/oauth2/v3"
   client_id: ""                           # TGW_TESLA_CLIENT_ID

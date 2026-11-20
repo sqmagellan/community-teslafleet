@@ -2,6 +2,7 @@ package onboard
 
 import (
 	"crypto/subtle"
+	"crypto/tls"
 	"embed"
 	"encoding/json"
 	"encoding/pem"
@@ -38,6 +39,9 @@ type Options struct {
 	CAFile     string // certificate chain for the telemetry server, used when none is pasted
 	// DefaultProfile preselects the enrollment profile until one is saved.
 	DefaultProfile string
+	// ProxyTLS verifies the vehicle-command proxy on enroll, the same way the
+	// command relay does. Nil means the system roots, never "skip".
+	ProxyTLS *tls.Config
 
 	// Tokens, when non-nil, is the single owner of the OAuth credential -- the
 	// command relay. Tesla rotates the refresh token on every use, so the wizard
@@ -533,7 +537,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "✗ Token refresh failed: "+err.Error())
 		return
 	}
-	if err := postEnroll(s.opts.ProxyURL, at, body); err != nil {
+	if err := postEnroll(s.opts.ProxyURL, at, body, s.opts.ProxyTLS); err != nil {
 		s.render(w, r, "✗ Enroll failed: "+err.Error())
 		return
 	}

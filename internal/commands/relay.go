@@ -5,7 +5,6 @@ package commands
 
 import (
 	"bytes"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,8 +90,8 @@ func Entities(cfg config.Commands) []Entity {
 		{Key: "frunk", Component: "cover", Name: "Frunk", DeviceClass: "door", StateKey: "frunk"},
 		{Key: "trunk", Component: "cover", Name: "Trunk", DeviceClass: "door", StateKey: "trunk"},
 		// Numbers.
-		{Key: "charge_limit", Component: "number", Name: "Charge limit", Min: 50, Max: 100, Step: 1, Unit: "%", StateKey: "charge_limit"},
-		{Key: "charging_amps", Component: "number", Name: "Charging amps", Min: 0, Max: 32, Step: 1, Unit: "A"},
+		{Key: "charge_limit", Component: "number", Name: "Charge limit", Min: staticRanges["charge_limit"].Min, Max: staticRanges["charge_limit"].Max, Step: 1, Unit: "%", StateKey: "charge_limit"},
+		{Key: "charging_amps", Component: "number", Name: "Charging amps", Min: staticRanges["charging_amps"].Min, Max: staticRanges["charging_amps"].Max, Step: 1, Unit: "A"},
 		// Selects (write-only/optimistic).
 		{Key: "climate_keeper", Component: "select", Name: "Climate keeper", Options: []string{"off", "keep", "dog", "camp"}},
 		{Key: "seat_heater_front_left", Component: "select", Name: "Seat heater front left", Options: seatLevels},
@@ -115,7 +114,7 @@ func Entities(cfg config.Commands) []Entity {
 	if cfg.SpeedLimitPIN != "" {
 		es = append(es,
 			Entity{Key: "speed_limit", Component: "switch", Name: "Speed limit"},
-			Entity{Key: "speed_limit_value", Component: "number", Name: "Speed limit value", Min: 50, Max: 90, Step: 1, Unit: "mph"},
+			Entity{Key: "speed_limit_value", Component: "number", Name: "Speed limit value", Min: staticRanges["speed_limit_value"].Min, Max: staticRanges["speed_limit_value"].Max, Step: 1, Unit: "mph"},
 		)
 	}
 	if cfg.PinToDrivePIN != "" {
@@ -155,6 +154,10 @@ type Relay struct {
 	store     locator
 	wakeGroup singleflight.Group // coalesces concurrent wakes per VIN
 
+	proxyHealth *proxyHealth
+	// limits are per-car number bounds read from fetched vehicle_data.
+	limits carLimits
+
 	// Wake budget per car per rolling hour. Every wake is billed and costs
 	// range, and a looping caller can otherwise wake a car all night.
 	// maxWakes <= 0 means no limit.
@@ -168,10 +171,16 @@ type Relay struct {
 // never be interpolated into a proxy URL. store supplies GPS for location-gated
 // commands (may be nil).
 func NewRelay(cfg config.Commands, knownVINs []string, st locator, log *slog.Logger) *Relay {
-	// Self-signed proxy cert → skip verify on the internal hop.
-	insecure := &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	tc, err := ProxyTLSConfig(cfg)
+	if err != nil {
+		log.Error("command proxy TLS config is unusable; every command will fail until it is fixed",
+			"err", err, "proxy_ca_file", cfg.ProxyCAFile)
+		tc = FailClosedTLS()
+	}
+	if cfg.ProxyInsecureSkipVerify {
+		log.Warn("!!! proxy_insecure_skip_verify is ON: the vehicle-command proxy's certificate is NOT checked. " +
+			"Anyone on that network path can read the OAuth token and change commands. " +
+			"Set proxy_ca_file (TGW_TESLA_PROXY_CA_FILE) and turn this off.")
 	}
 	known := make(map[string]bool, len(knownVINs))
 	for _, vin := range knownVINs {
@@ -180,7 +189,7 @@ func NewRelay(cfg config.Commands, knownVINs []string, st locator, log *slog.Log
 	r := &Relay{
 		tm:        newTokenManager(cfg, log),
 		proxy:     strings.TrimRight(cfg.ProxyURL, "/"),
-		client:    insecure,
+		client:    NewProxyClient(tc),
 		apiClient: &http.Client{Timeout: 30 * time.Second},
 		fleetAPI:  strings.TrimRight(cfg.FleetAPIURL, "/"),
 		valetPIN:  cfg.ValetPIN,
@@ -190,6 +199,8 @@ func NewRelay(cfg config.Commands, knownVINs []string, st locator, log *slog.Log
 		knownVINs: known,
 		store:     st,
 		maxWakes:  cfg.MaxWakesPerHour,
+
+		proxyHealth: &proxyHealth{insecure: cfg.ProxyInsecureSkipVerify},
 	}
 	// Eager refresh so we know at startup whether the token is valid (and persist
 	// the rotated token immediately). Commands won't work without a valid token.
@@ -475,6 +486,11 @@ func (r *Relay) Handle(vin, key, payload string) (res Result) {
 			res.Reason = "bad charge_limit payload"
 			return res
 		}
+		if msg, bad := r.outOfRange(vin, key, pct); bad {
+			r.log.Warn("number command out of range", "vin", vin, "key", key, "value", pct)
+			res.Reason = msg
+			return res
+		}
 		err = r.command(vin, "set_charge_limit", map[string]any{"percent": int(pct)})
 	case "charging_amps":
 		a, e := parseNum(payload)
@@ -483,12 +499,22 @@ func (r *Relay) Handle(vin, key, payload string) (res Result) {
 			res.Reason = "bad charging_amps payload"
 			return res
 		}
+		if msg, bad := r.outOfRange(vin, key, a); bad {
+			r.log.Warn("number command out of range", "vin", vin, "key", key, "value", a)
+			res.Reason = msg
+			return res
+		}
 		err = r.command(vin, "set_charging_amps", map[string]any{"charging_amps": int(a)})
 	case "climate_temp":
 		t, e := parseNum(payload)
 		if e != nil {
 			r.log.Warn("bad climate_temp payload", "payload", payload)
 			res.Reason = "bad climate_temp payload"
+			return res
+		}
+		if msg, bad := r.outOfRange(vin, key, t); bad {
+			r.log.Warn("number command out of range", "vin", vin, "key", key, "value", t)
+			res.Reason = msg
 			return res
 		}
 		err = r.command(vin, "set_temps", map[string]any{"driver_temp": t, "passenger_temp": t})
@@ -560,6 +586,11 @@ func (r *Relay) Handle(vin, key, payload string) (res Result) {
 		if e != nil {
 			r.log.Warn("bad speed_limit_value payload", "payload", payload)
 			res.Reason = "bad speed_limit_value payload"
+			return res
+		}
+		if msg, bad := r.outOfRange(vin, key, v); bad {
+			r.log.Warn("number command out of range", "vin", vin, "key", key, "value", v)
+			res.Reason = msg
 			return res
 		}
 		err = r.command(vin, "speed_limit_set_limit", map[string]any{"limit_mph": v})
@@ -695,6 +726,7 @@ func (r *Relay) VehicleData(vin string) (map[string]any, error) {
 	if out.Response == nil {
 		return nil, fmt.Errorf("vehicle_data had no response object")
 	}
+	r.limits.recordLimits(vin, out.Response)
 	return out.Response, nil
 }
 
@@ -1018,6 +1050,7 @@ func (r *Relay) Enroll(payload []byte) error {
 	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := r.client.Do(req)
+	r.proxyHealth.note(err)
 	if err != nil {
 		return err
 	}
@@ -1071,6 +1104,7 @@ func (r *Relay) post(urlStr string, body map[string]any) error {
 		req.Header.Set("Authorization", "Bearer "+tok)
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := r.client.Do(req)
+		r.proxyHealth.note(err)
 		if err != nil {
 			return err
 		}

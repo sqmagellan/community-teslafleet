@@ -16,11 +16,15 @@ import (
 func itoa(n int) string { return strconv.Itoa(n) }
 
 // postEnroll sends a fleet_telemetry_config to the vehicle-command proxy (which signs
-// it with the partner key). The proxy uses a self-signed cert on the internal hop.
-func postEnroll(proxyURL, accessToken string, payload []byte) error {
+// it with the partner key). tc verifies the proxy as the command relay does; it
+// used to skip verification while sending the OAuth token.
+func postEnroll(proxyURL, accessToken string, payload []byte, tc *tls.Config) error {
+	if tc == nil {
+		tc = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
 	client := &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+		Transport: &http.Transport{TLSClientConfig: tc},
 	}
 	url := strings.TrimRight(proxyURL, "/") + "/api/1/vehicles/fleet_telemetry_config"
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))

@@ -14,7 +14,8 @@
 #   - The public key at https://<domain>/.well-known/appspecific/com.tesla.3p.public-key.pem,
 #     on any HTTPS host on your domain.
 #   - ./proxy/ with private-key.pem, tls/cert.pem and tls/key.pem. The wizard
-#     generates these.
+#     generates these. The gateway checks tls/cert.pem when it connects, so the
+#     certificate must name vehicle-command-proxy (a SAN).
 #   - .env, copied from .env.example.
 
 name: community-teslafleet
@@ -56,6 +57,7 @@ services:
       - "127.0.0.1:8099:8099"                              # onboarding wizard, loopback only
     volumes:
       - ./data:/data                                       # config.yaml, token cache, ftc.json, recordings
+      - ./proxy/tls/cert.pem:/proxy-ca.pem:ro              # the gateway verifies the proxy against it
     environment:
       - TGW_INGEST_ZMQ_ADDR=tcp://fleet-telemetry:5284
       - TGW_INGEST_NAMESPACE=${TELEMETRY_NAMESPACE:-tesla_telemetry}
@@ -69,6 +71,7 @@ services:
       - TGW_ONBOARD_ENABLED=${TGW_ONBOARD_ENABLED:-false}
       - TGW_ONBOARD_PASSWORD=${TGW_ONBOARD_PASSWORD:-}
       - TGW_TESLA_PROXY_URL=https://vehicle-command-proxy:4443
+      - TGW_TESLA_PROXY_CA_FILE=/proxy-ca.pem              # cert must name vehicle-command-proxy
       - TGW_TESLA_CLIENT_ID=${TGW_TESLA_CLIENT_ID:-}
       - TGW_TESLA_CLIENT_SECRET=${TGW_TESLA_CLIENT_SECRET:-}
       - TGW_TESLA_REFRESH_TOKEN=${TGW_TESLA_REFRESH_TOKEN:-}

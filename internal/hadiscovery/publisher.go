@@ -38,6 +38,10 @@ type Publisher struct {
 	// MQTT on-connect callback, so it is guarded by annMu.
 	announced map[string]bool
 	annMu     sync.Mutex
+	// annRanges is the number-command bounds each VIN's discovery last
+	// advertised. When the car reports different limits, the device is
+	// announced again so HA's sliders match what the relay accepts.
+	annRanges map[string]string
 
 	// covered is the set of telemetry field names represented by a curated entity;
 	// generic per-field discovery skips them. Computed once.
@@ -226,6 +230,7 @@ func (p *Publisher) resetAnnounced() {
 	p.annMu.Lock()
 	defer p.annMu.Unlock()
 	p.announced = map[string]bool{}
+	p.annRanges = map[string]string{}
 	p.discovered = map[string]map[string]bool{}
 }
 
@@ -249,20 +254,53 @@ func (p *Publisher) markFieldDiscovered(vin, field string) {
 }
 
 func (p *Publisher) ensureAnnounced(v config.Vehicle) {
+	sig := p.rangeSig(v)
 	p.annMu.Lock()
-	if p.announced[v.VIN] {
+	if p.announced[v.VIN] && p.annRanges[v.VIN] == sig {
 		p.annMu.Unlock()
 		return
 	}
 	p.announced[v.VIN] = true
+	if p.annRanges == nil {
+		p.annRanges = map[string]string{}
+	}
+	p.annRanges[v.VIN] = sig
 	p.annMu.Unlock()
 	if err := p.publishVehicleDiscovery(v); err != nil {
 		p.log.Error("vehicle discovery publish failed", "vin", v.VIN, "err", err)
 		// Roll back so the next tick retries this vehicle.
 		p.annMu.Lock()
 		delete(p.announced, v.VIN)
+		delete(p.annRanges, v.VIN)
 		p.annMu.Unlock()
 	}
+}
+
+// numberRange is the span a number command accepts for one car, the same
+// one the relay enforces. fallback is used only for a key with no range.
+func (p *Publisher) numberRange(vin, key string, fallback commands.Range) commands.Range {
+	if p.relay != nil {
+		if rg, ok := p.relay.NumberRange(vin, key); ok {
+			return rg
+		}
+	}
+	if rg, ok := commands.StaticRange(key); ok {
+		return rg
+	}
+	return fallback
+}
+
+// rangeSig summarizes the number bounds v's discovery advertises.
+func (p *Publisher) rangeSig(v config.Vehicle) string {
+	if p.relay == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, k := range []string{"charge_limit", "charging_amps", "speed_limit_value", "climate_temp"} {
+		rg := p.numberRange(v.VIN, k, commands.Range{})
+		fmt.Fprintf(&b, "%s=%g..%g;", k, rg.Min, rg.Max)
+	}
+	return b.String()
 }
 
 // pubID is the public identifier for a vehicle per ha.device_identifier: the name
@@ -480,8 +518,8 @@ func (p *Publisher) genericDiscoveryConfig(v config.Vehicle, field string, val a
 	if _, ok := val.(bool); ok {
 		c["payload_on"] = "true"
 		c["payload_off"] = "false"
-		// See the note below on default(false): render-identical, warning-free.
-		c["value_template"] = fmt.Sprintf("{{ 'true' if value_json.%s | default(false) else 'false' }}", field)
+		// Absent renders None (unknown); see boolTemplate.
+		c["value_template"] = boolTemplate(field)
 		return "binary_sensor", c
 	}
 	// none, not '': see valueTemplate.
@@ -640,10 +678,14 @@ func (p *Publisher) commandDiscoveryConfig(v config.Vehicle, ce commands.Entity,
 		c["state_locked"] = "LOCKED"
 		c["state_unlocked"] = "UNLOCKED"
 		c["state_topic"] = state
-		c["value_template"] = "{{ 'LOCKED' if value_json.locked else 'UNLOCKED' }}"
+		// An absent "locked" key used to render UNLOCKED. It renders the
+		// literal None now, which HA shows as unknown.
+		c["value_template"] = "{% set v = value_json.locked | default(none) %}" +
+			"{{ none if v is none else ('LOCKED' if v else 'UNLOCKED') }}"
 	case "number":
-		c["min"] = ce.Min
-		c["max"] = ce.Max
+		rg := p.numberRange(v.VIN, ce.Key, commands.Range{Min: ce.Min, Max: ce.Max})
+		c["min"] = rg.Min
+		c["max"] = rg.Max
 		c["step"] = ce.Step
 		c["mode"] = "slider"
 		if ce.Unit != "" {
@@ -686,8 +728,9 @@ func (p *Publisher) commandDiscoveryConfig(v config.Vehicle, ce commands.Entity,
 		c["current_temperature_topic"] = state
 		c["current_temperature_template"] = "{{ value_json.climate_current | default('') }}"
 		c["temperature_unit"] = "C"
-		c["min_temp"] = 15
-		c["max_temp"] = 28
+		rg := p.numberRange(v.VIN, "climate_temp", commands.Range{Min: 15, Max: 28})
+		c["min_temp"] = rg.Min
+		c["max_temp"] = rg.Max
 		c["temp_step"] = 0.5
 	case "update":
 		c["device_class"] = "firmware"
@@ -761,11 +804,7 @@ func (p *Publisher) discoveryConfig(v config.Vehicle, e entity, dev, origin map[
 		if e.ValueTmpl != "" {
 			c["value_template"] = e.ValueTmpl
 		} else {
-			// default(false) keeps the RENDERED value identical (Jinja Undefined is already
-			// falsy) while stopping HA logging a template-variable warning for every optional
-			// key. The tire-warning keys are only present in snapshots that carried TPMS data,
-			// which produced 1,066,320 warnings / 235.6 MB of home-assistant.log by 2026-08-04.
-			c["value_template"] = fmt.Sprintf("{{ 'true' if value_json.%s | default(false) else 'false' }}", e.Key)
+			c["value_template"] = boolTemplate(e.Key)
 		}
 	default: // sensor
 		c["value_template"] = p.valueTemplate(e)
@@ -787,4 +826,18 @@ func (p *Publisher) valueTemplate(e entity) string {
 	// option, and HA logged "Ignoring invalid option ... got ''" on every
 	// message (~86k lines a day with two parked cars).
 	return fmt.Sprintf("{{ value_json.%s | default(none) }}", e.Key)
+}
+
+// boolTemplate renders a boolean state key for a binary_sensor: 'true' or
+// 'false', or the literal None when the key is absent, which HA shows as
+// unknown. It used to render an absent key as 'false', so a lock with no
+// reading showed as unlocked and a missing door as closed.
+//
+// default(none) still keeps HA from logging a template-variable warning for
+// every optional key. The tire-warning keys are only present in snapshots
+// that carried TPMS data, and without a default they produced 1,066,320
+// warnings / 235.6 MB of home-assistant.log by 2026-08-04.
+func boolTemplate(key string) string {
+	return fmt.Sprintf("{%% set v = value_json.%s | default(none) %%}"+
+		"{{ none if v is none else ('true' if v else 'false') }}", key)
 }

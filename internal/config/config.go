@@ -128,6 +128,18 @@ type Commands struct {
 	ClientID     string `yaml:"client_id"`
 	ClientSecret string `yaml:"client_secret"`
 	RefreshToken string `yaml:"refresh_token"`
+	// ProxyCAFile is a PEM file of the certificate(s) that sign the
+	// vehicle-command proxy's TLS certificate; a self-signed proxy cert is
+	// its own CA. The relay sends the OAuth token over this hop, so it is
+	// verified, including the host name. Empty means the system roots.
+	ProxyCAFile string `yaml:"proxy_ca_file"`
+	// ProxyServerName overrides the host name checked against the proxy's
+	// certificate, for a proxy reached by IP.
+	ProxyServerName string `yaml:"proxy_server_name"`
+	// ProxyInsecureSkipVerify turns verification off. It exists as an
+	// escape hatch only: anyone on the path can then read the token and
+	// change commands. The gateway warns on every start while it is set.
+	ProxyInsecureSkipVerify bool `yaml:"proxy_insecure_skip_verify"`
 	// TokenCache persists the (rotating) refresh token across restarts. Tesla
 	// rotates the refresh token on use; the cached value takes precedence over
 	// RefreshToken on startup. Mount a writable volume for this path.
@@ -559,6 +571,9 @@ func applyEnv(c *Config) {
 	setStr(&c.Units.OdometerInput, "TGW_UNITS_ODOMETER_INPUT")
 	setBool(&c.Commands.Enabled, "TGW_COMMANDS_ENABLED")
 	setStr(&c.Commands.ProxyURL, "TGW_TESLA_PROXY_URL")
+	setStr(&c.Commands.ProxyCAFile, "TGW_TESLA_PROXY_CA_FILE")
+	setStr(&c.Commands.ProxyServerName, "TGW_TESLA_PROXY_SERVER_NAME")
+	setBool(&c.Commands.ProxyInsecureSkipVerify, "TGW_TESLA_PROXY_INSECURE_SKIP_VERIFY")
 	setStr(&c.Commands.AuthHost, "TGW_TESLA_AUTH_HOST")
 	setStr(&c.Commands.AuthPath, "TGW_TESLA_AUTH_PATH")
 	setStr(&c.Commands.ClientID, "TGW_TESLA_CLIENT_ID")

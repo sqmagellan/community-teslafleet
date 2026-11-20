@@ -187,6 +187,9 @@ type Health struct {
 	// Status: this probe answers "is telemetry flowing", and a bad credential
 	// does not stop that.
 	CommandsCredential string `json:"commands_credential,omitempty"`
+	// CommandsProxy is "ok" once the vehicle-command proxy has answered over
+	// TLS, or the last error reaching it. Empty when commands are off.
+	CommandsProxy string `json:"commands_proxy,omitempty"`
 }
 
 // health computes readiness.
@@ -212,6 +215,7 @@ func (s *Server) health() Health {
 	}
 	if s.relay != nil {
 		h.CommandsCredential = s.relay.CredentialStatus()
+		h.CommandsProxy = s.relay.ProxyStatus()
 	}
 	if s.ingest != nil {
 		connected := s.ingest.Connected()

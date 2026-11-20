@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"log/slog"
 	"net/http"
@@ -115,9 +116,9 @@ func main() {
 		// here and every command failed at send time.
 		//
 		// Loopback only: this endpoint signs commands with the car's private key
-		// and must not be reachable from the network. The relay dials it with
-		// verification off, so a self-signed cert of its own is enough -- it does
-		// not borrow the telemetry key, which may be a real one.
+		// and must not be reachable from the network. It gets a self-signed cert
+		// of its own (not the telemetry key, which may be a real one), and the
+		// relay trusts exactly that cert, checked for the name "localhost".
 		if cfg.Commands.Enabled {
 			dir := filepath.Dir(cfg.Stream.FleetTelemetryConfig)
 			pCert := filepath.Join(dir, "certs", "proxy-cert.pem")
@@ -127,6 +128,12 @@ func main() {
 			}
 			port := strconv.Itoa(cfg.Stream.ProxyPort)
 			cfg.Commands.ProxyURL = "https://127.0.0.1:" + port
+			if cfg.Commands.ProxyCAFile == "" && !cfg.Commands.ProxyInsecureSkipVerify {
+				cfg.Commands.ProxyCAFile = pCert
+				if cfg.Commands.ProxyServerName == "" {
+					cfg.Commands.ProxyServerName = "localhost"
+				}
+			}
 			sup.Add(supervisor.Process{
 				Name: "vehicle-command-proxy",
 				Path: cfg.Stream.ProxyBin,
@@ -206,6 +213,20 @@ func main() {
 	if cfg.Commands.Enabled {
 		relay = commands.NewRelay(cfg.Commands, vins, st, log)
 		log.Info("command relay enabled", "proxy", cfg.Commands.ProxyURL)
+		// Prove the TLS hop now rather than at the first button press. The
+		// embedded proxy may still be starting, so try for about 30 s.
+		go func(r *commands.Relay) {
+			var err error
+			for i := 0; i < 6; i++ {
+				if err = r.ProbeProxy(); err == nil {
+					log.Info("command proxy reachable over TLS", "proxy", cfg.Commands.ProxyURL,
+						"verified", !cfg.Commands.ProxyInsecureSkipVerify)
+					return
+				}
+				time.Sleep(5 * time.Second)
+			}
+			log.Error("command proxy NOT reachable; commands will fail", "proxy", cfg.Commands.ProxyURL, "err", err)
+		}(relay)
 		// Auto-name each vehicle from the Fleet API (display_name) so the HA device
 		// is "Tesla - <name>" instead of the VIN. Only when not explicitly named.
 		for i := range cfg.Vehicles {
@@ -234,6 +255,7 @@ func main() {
 			EnrollFile: cfg.Commands.EnrollFile,
 			TokenCache: cfg.Commands.TokenCache,
 			CAFile:     cfg.Onboard.CAFile,
+			ProxyTLS:   onboardProxyTLS(cfg.Commands, log),
 
 			DefaultProfile: cfg.Onboard.DefaultProfile,
 		}
@@ -345,6 +367,17 @@ func waitBackground(bg *sync.WaitGroup, log *slog.Logger) {
 
 // localZMQ turns a dispatcher bind address (e.g. tcp://0.0.0.0:5284) into the
 // loopback address the gateway connects to for an embedded fleet-telemetry.
+// onboardProxyTLS gives the wizard's enroll call the same proxy verification
+// as the relay. A config error fails closed.
+func onboardProxyTLS(c config.Commands, log *slog.Logger) *tls.Config {
+	tc, err := commands.ProxyTLSConfig(c)
+	if err != nil {
+		log.Error("command proxy TLS config is unusable for the wizard's enroll", "err", err)
+		return commands.FailClosedTLS()
+	}
+	return tc
+}
+
 func localZMQ(bind string) string {
 	if i := strings.LastIndex(bind, ":"); i >= 0 {
 		return "tcp://127.0.0.1" + bind[i:]
