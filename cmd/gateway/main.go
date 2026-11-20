@@ -128,11 +128,12 @@ func main() {
 			}
 			port := strconv.Itoa(cfg.Stream.ProxyPort)
 			cfg.Commands.ProxyURL = "https://127.0.0.1:" + port
+			// The URL is an IP, but the generated cert names only localhost.
+			if cfg.Commands.ProxyServerName == "" {
+				cfg.Commands.ProxyServerName = "localhost"
+			}
 			if cfg.Commands.ProxyCAFile == "" && !cfg.Commands.ProxyInsecureSkipVerify {
 				cfg.Commands.ProxyCAFile = pCert
-				if cfg.Commands.ProxyServerName == "" {
-					cfg.Commands.ProxyServerName = "localhost"
-				}
 			}
 			sup.Add(supervisor.Process{
 				Name: "vehicle-command-proxy",

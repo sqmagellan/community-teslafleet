@@ -89,3 +89,22 @@ func TestRangesFromVehicleData(t *testing.T) {
 		t.Fatalf("VIN2 amps max %v, want static 48", rg.Max)
 	}
 }
+
+func TestReportedLimitsMustBeFinite(t *testing.T) {
+	r, sent := relayTo(t)
+	r.limits.recordLimits("VIN1", map[string]any{"charge_state": map[string]any{
+		"charge_current_request_max": "+Inf",
+		"charge_limit_soc_max":       "NaN",
+	}})
+	if rg, _ := r.NumberRange("VIN1", "charging_amps"); rg.Max != 48 {
+		t.Fatalf("amps max %v, want the static 48", rg.Max)
+	}
+	r.Handle("VIN1", "charging_amps", "500")
+	if sent() != "" {
+		t.Fatal("500 A sent")
+	}
+	r.store = fakeLocator{"VIN1": {Fields: map[string]store.FieldValue{fieldChargeCurrentRequestMax: {Value: "Inf"}}}}
+	if rg, _ := r.NumberRange("VIN1", "charging_amps"); rg.Max != 48 {
+		t.Fatalf("telemetry Inf accepted: max %v", rg.Max)
+	}
+}

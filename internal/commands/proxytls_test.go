@@ -125,3 +125,30 @@ func TestProbeProxy(t *testing.T) {
 		t.Fatal("probe accepted an unknown certificate")
 	}
 }
+
+// TLS settings mean nothing on an http:// URL, and a redirect could carry the
+// token somewhere else. Both are refused.
+func TestProxyClient_RefusesPlaintextAndRedirects(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer plain.Close()
+	r := relayWithTLS(t, plain.URL, config.Commands{})
+	if res := r.Handle("VIN1", "honk", "PRESS"); res.Outcome != OutcomeFailed {
+		t.Fatalf("command sent over plain http: %+v", res)
+	}
+	if err := r.ProbeProxy(); err == nil {
+		t.Fatal("probe accepted plain http")
+	}
+
+	url, ca, sent := tlsProxy(t)
+	redir := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		http.Redirect(w, req, url+req.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer redir.Close()
+	caB, _ := os.ReadFile(ca)
+	both := filepath.Join(t.TempDir(), "both.pem")
+	_ = os.WriteFile(both, append(caB, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: redir.Certificate().Raw})...), 0o644)
+	r = relayWithTLS(t, redir.URL, config.Commands{ProxyCAFile: both})
+	if res := r.Handle("VIN1", "honk", "PRESS"); res.Outcome != OutcomeFailed || sent() != "" {
+		t.Fatalf("redirect followed: %+v sent=%q", res, sent())
+	}
+}

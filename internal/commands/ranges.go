@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"sync"
 
@@ -71,17 +72,13 @@ func (c *carLimits) recordLimits(vin string, doc map[string]any) {
 	c.set(vin, vals)
 }
 
+// num reads a finite number. A reported NaN or ±Inf is no limit at all.
 func num(v any) (float64, bool) {
-	switch x := v.(type) {
-	case float64:
-		return x, true
-	case int:
-		return float64(x), true
-	case string:
-		f, err := strconv.ParseFloat(x, 64)
-		return f, err == nil
+	if _, isBool := v.(bool); isBool {
+		return 0, false
 	}
-	return 0, false
+	f, ok := store.ToFloat(v)
+	return f, ok && !math.IsNaN(f) && !math.IsInf(f, 0)
 }
 
 // StaticRange returns the fallback bounds for a number command key.
@@ -121,8 +118,10 @@ func (r *Relay) NumberRange(vin, key string) (Range, bool) {
 func (r *Relay) reportedMaxAmps(vin string) (float64, bool) {
 	if r.store != nil {
 		if snap, ok := r.store.Snapshot(vin); ok {
-			if m, ok := snap.Num(fieldChargeCurrentRequestMax); ok && m > 0 {
-				return m, true
+			if fv, ok := snap.Field(fieldChargeCurrentRequestMax); ok {
+				if m, ok := num(fv.Value); ok && m > 0 {
+					return m, true
+				}
 			}
 		}
 	}

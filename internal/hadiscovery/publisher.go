@@ -42,6 +42,12 @@ type Publisher struct {
 	// advertised. When the car reports different limits, the device is
 	// announced again so HA's sliders match what the relay accepts.
 	annRanges map[string]string
+	// annGen counts resets. A discovery pass that started before a reset
+	// does not record itself as done, so the pass after the reconnect
+	// publishes again. discMu runs one discovery pass at a time, so an older
+	// pass cannot overwrite a newer one's retained configs.
+	annGen uint64
+	discMu sync.Mutex
 
 	// covered is the set of telemetry field names represented by a curated entity;
 	// generic per-field discovery skips them. Computed once.
@@ -231,6 +237,7 @@ func (p *Publisher) resetAnnounced() {
 	defer p.annMu.Unlock()
 	p.announced = map[string]bool{}
 	p.annRanges = map[string]string{}
+	p.annGen++
 	p.discovered = map[string]map[string]bool{}
 }
 
@@ -254,26 +261,31 @@ func (p *Publisher) markFieldDiscovered(vin, field string) {
 }
 
 func (p *Publisher) ensureAnnounced(v config.Vehicle) {
+	p.discMu.Lock()
+	defer p.discMu.Unlock()
 	sig := p.rangeSig(v)
 	p.annMu.Lock()
 	if p.announced[v.VIN] && p.annRanges[v.VIN] == sig {
 		p.annMu.Unlock()
 		return
 	}
+	gen := p.annGen
+	p.annMu.Unlock()
+	if err := p.publishVehicleDiscovery(v); err != nil {
+		// Nothing recorded, so the next tick retries this vehicle.
+		p.log.Error("vehicle discovery publish failed", "vin", v.VIN, "err", err)
+		return
+	}
+	p.annMu.Lock()
+	defer p.annMu.Unlock()
+	if gen != p.annGen {
+		return // a reconnect reset the bookkeeping mid-pass; publish again
+	}
 	p.announced[v.VIN] = true
 	if p.annRanges == nil {
 		p.annRanges = map[string]string{}
 	}
 	p.annRanges[v.VIN] = sig
-	p.annMu.Unlock()
-	if err := p.publishVehicleDiscovery(v); err != nil {
-		p.log.Error("vehicle discovery publish failed", "vin", v.VIN, "err", err)
-		// Roll back so the next tick retries this vehicle.
-		p.annMu.Lock()
-		delete(p.announced, v.VIN)
-		delete(p.annRanges, v.VIN)
-		p.annMu.Unlock()
-	}
 }
 
 // numberRange is the span a number command accepts for one car, the same

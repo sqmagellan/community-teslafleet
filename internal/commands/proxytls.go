@@ -3,6 +3,7 @@ package commands
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -49,12 +50,27 @@ func FailClosedTLS() *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: x509.NewCertPool()}
 }
 
-// NewProxyClient is the HTTP client for the vehicle-command proxy.
+// NewProxyClient is the HTTP client for the vehicle-command proxy. It only
+// speaks HTTPS, since TLS settings protect nothing on an http:// URL, and it
+// follows no redirect, which could carry the token to another endpoint.
 func NewProxyClient(tc *tls.Config) *http.Client {
 	return &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: tc},
+		Transport: httpsOnly{&http.Transport{TLSClientConfig: tc}},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("the command proxy answered with a redirect; not following it")
+		},
 	}
+}
+
+// httpsOnly refuses any request that is not https.
+type httpsOnly struct{ rt http.RoundTripper }
+
+func (h httpsOnly) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Scheme != "https" {
+		return nil, fmt.Errorf("refusing %s:// to the command proxy; it must be https", req.URL.Scheme)
+	}
+	return h.rt.RoundTrip(req)
 }
 
 // proxyHealth remembers whether the last exchange with the proxy got an
