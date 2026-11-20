@@ -4,6 +4,10 @@
 
 - **Drives with a stuck gear.** A car can report P and then drive with its gear never leaving P while speed and location keep streaming. TeslaMate saw a parked car and lost the whole drive. A speed of 3 or more that arrives after the last gear reading now counts as driving, and the car is reported in D. A later P or an active charge ends it. Home Assistant's shift state sensor reports D too.
 
+- **Command guards (review 2026-11-16).** Remote start needs the button's `PRESS` and a software install needs `INSTALL`; any payload used to run them. A VIN that is not letters and digits is refused before it reaches a URL. `NaN` and infinity are refused as numbers. The speed limit value needs the speed-limit PIN, like the speed limit switch. The trunk does not toggle on state restored from disk after a restart. A car's command queue holds at most 32 waiting commands.
+- **Command topics.** A `state_topic_base` with more than one level (`teslafleet/home`) dropped every command. Two cars whose names give the same id (`Road Car`, `Road-Car`) are refused instead of sending to the first.
+- **Wizard.** Requests from a sibling subdomain are refused like cross-site ones. Generating a key asks for confirmation whenever a private key file exists. Pasting a refresh token with no `token_cache` path is an error instead of "saved". Saves no longer share one temp file.
+
 ## 0.2.1: the add-on can use a real certificate (2026-10-18)
 
 - **Add-on certificate.** New `tls_cert` and `tls_key` options read a certificate from Home Assistant's `/ssl` folder, `fullchain.pem` and `privkey.pem` by default. The wizard sends that chain to Tesla without a paste. The add-on had no way to set a certificate, so the car could not connect to it.

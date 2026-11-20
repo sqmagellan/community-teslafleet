@@ -67,9 +67,10 @@ func NewDispatcher(handle func(vin, key, payload string) Result, lim Limits, log
 	return &Dispatcher{handle: handle, limits: lim, log: log, now: time.Now, cars: map[string]*carQueue{}}
 }
 
-// Submit queues one command. done is called exactly once with the outcome,
-// from the car's worker goroutine or, for a superseded command, from the
-// caller's.
+// Submit queues one command. done is called exactly once with the outcome:
+// from the car's worker goroutine, or, for a superseded command or a full
+// queue, from a goroutine of its own. Submit itself never waits on done, so
+// an MQTT intake callback is not held by a slow result publish.
 //
 // A set-state command that is still waiting when a newer one with the same
 // key arrives takes the newer payload, and the older request is reported as
@@ -91,7 +92,7 @@ func (d *Dispatcher) Submit(vin, key, payload string, done func(Result)) {
 		d.mu.Unlock()
 		d.log.Warn("command refused: queue full", "vin", vin, "key", key, "pending", maxPending)
 		if done != nil {
-			done(Result{Key: key, Payload: payload, Outcome: OutcomeRejected,
+			go done(Result{Key: key, Payload: payload, Outcome: OutcomeRejected,
 				Reason: fmt.Sprintf("command queue full (%d waiting)", maxPending)})
 		}
 		return
@@ -104,7 +105,7 @@ func (d *Dispatcher) Submit(vin, key, payload string, done func(Result)) {
 	d.mu.Unlock()
 
 	if replaced != nil && replaced.done != nil {
-		replaced.done(Result{Key: key, Payload: replaced.payload, Outcome: OutcomeRejected,
+		go replaced.done(Result{Key: key, Payload: replaced.payload, Outcome: OutcomeRejected,
 			Reason: "replaced by a newer value before it was sent"})
 	}
 	if start {
