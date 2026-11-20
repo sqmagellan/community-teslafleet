@@ -252,8 +252,25 @@ func (p *Publisher) fieldDiscovered(vin, field string) bool {
 }
 
 func (p *Publisher) markFieldDiscovered(vin, field string) {
+	p.markFieldDiscoveredIn(p.generation(), vin, field)
+}
+
+// generation is the current reset count; see annGen.
+func (p *Publisher) generation() uint64 {
 	p.annMu.Lock()
 	defer p.annMu.Unlock()
+	return p.annGen
+}
+
+// markFieldDiscoveredIn records a field only if no reset happened since gen,
+// so a publish to the broker before a reconnect does not count for the one
+// after it.
+func (p *Publisher) markFieldDiscoveredIn(gen uint64, vin, field string) {
+	p.annMu.Lock()
+	defer p.annMu.Unlock()
+	if gen != p.annGen {
+		return
+	}
 	if p.discovered[vin] == nil {
 		p.discovered[vin] = map[string]bool{}
 	}
@@ -477,6 +494,7 @@ func (p *Publisher) publishState() {
 func (p *Publisher) discoverNewFields(v config.Vehicle, snap store.Snapshot) {
 	dev := p.deviceInfo(v)
 	origin := map[string]any{"name": "community-teslafleet"}
+	gen := p.generation()
 	for name, fv := range snap.Fields {
 		if p.fieldDiscovered(v.VIN, name) || p.covered[name] {
 			continue
@@ -484,7 +502,7 @@ func (p *Publisher) discoverNewFields(v config.Vehicle, snap store.Snapshot) {
 		// Skip dict/composite values that have no scalar rendering (the curated
 		// composites already expose their sub-values; any other dict is noise).
 		if _, isMap := fv.Value.(map[string]any); isMap {
-			p.markFieldDiscovered(v.VIN, name)
+			p.markFieldDiscoveredIn(gen, v.VIN, name)
 			continue
 		}
 		// A nil value (the car reported the field invalid, or a restored state file
@@ -506,7 +524,7 @@ func (p *Publisher) discoverNewFields(v config.Vehicle, snap store.Snapshot) {
 			p.log.Error("generic discovery publish failed", "topic", topic, "err", tok.Error())
 			continue
 		}
-		p.markFieldDiscovered(v.VIN, name)
+		p.markFieldDiscoveredIn(gen, v.VIN, name)
 		p.log.Debug("generic discovery published", "vin", v.VIN, "field", name)
 	}
 }

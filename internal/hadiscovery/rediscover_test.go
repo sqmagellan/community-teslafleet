@@ -30,3 +30,21 @@ func TestFieldDiscoveredHandlesUnknownVIN(t *testing.T) {
 		t.Error("unknown VIN reported as already discovered")
 	}
 }
+
+// A generic publish that finished before a reconnect reset must not mark the
+// field done in the new generation: the new broker may not have it.
+func TestStaleGenericMarkIgnoredAfterReset(t *testing.T) {
+	p := newTestPublisher()
+	p.announced = map[string]bool{}
+	p.discovered = map[string]map[string]bool{}
+	gen := p.generation()
+	p.resetAnnounced()
+	p.markFieldDiscoveredIn(gen, "VIN1", "PackVoltage")
+	if p.fieldDiscovered("VIN1", "PackVoltage") {
+		t.Fatal("a pass from before the reset marked the field discovered")
+	}
+	p.markFieldDiscoveredIn(p.generation(), "VIN1", "PackVoltage")
+	if !p.fieldDiscovered("VIN1", "PackVoltage") {
+		t.Fatal("a current pass did not mark the field")
+	}
+}
