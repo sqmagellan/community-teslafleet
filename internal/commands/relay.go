@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -236,6 +237,15 @@ func (r *Relay) Handle(vin, key, payload string) (res Result) {
 		Reason: "rejected before dispatch"}
 	// An empty knownVINs set means zero-config auto-discovery: accept any VIN. A
 	// non-empty set acts as an explicit allow-list.
+	//
+	// The VIN is interpolated into the proxy URL path. With no allow-list it
+	// was unchecked, so a VIN carrying "/" or "?" could address a different
+	// command than the key names.
+	if !urlSafeVIN(vin) {
+		r.log.Warn("rejecting command for malformed VIN", "vin", vin, "key", key)
+		res.Reason = "malformed VIN"
+		return res
+	}
 	if len(r.knownVINs) > 0 && !r.knownVINs[vin] {
 		r.log.Warn("rejecting command for unknown VIN", "vin", vin, "key", key)
 		res.Reason = "unknown VIN"
@@ -337,6 +347,11 @@ func (r *Relay) Handle(vin, key, payload string) (res Result) {
 	case "charge_standard":
 		err = r.command(vin, "charge_standard", nil)
 	case "remote_start":
+		// Enables keyless driving: only the button's own PRESS payload counts.
+		if !strings.EqualFold(strings.TrimSpace(payload), "PRESS") {
+			bad("PRESS")
+			return
+		}
 		err = r.command(vin, "remote_start_drive", nil)
 	case "homelink":
 		lat, lon, ok := r.latlon(vin)
@@ -489,7 +504,13 @@ func (r *Relay) Handle(vin, key, payload string) (res Result) {
 
 	// --- software updates ---
 	case "software_update":
-		// HA 'update' install press → install now (offset 0).
+		// HA 'update' install press → install now (offset 0). Only the
+		// advertised payload_install value counts; anything else used to start
+		// an install.
+		if !strings.EqualFold(strings.TrimSpace(payload), "INSTALL") {
+			bad("INSTALL")
+			return
+		}
 		err = r.command(vin, "schedule_software_update", map[string]any{"offset_sec": 0})
 	case "cancel_update":
 		err = r.command(vin, "cancel_software_update", nil)
@@ -528,6 +549,13 @@ func (r *Relay) Handle(vin, key, payload string) (res Result) {
 			err = r.command(vin, "speed_limit_deactivate", map[string]any{"pin": r.speedPIN})
 		}
 	case "speed_limit_value":
+		// Discovery hides this entity without a PIN; the topic is still
+		// subscribed, so the gate has to be here too.
+		if r.speedPIN == "" {
+			r.log.Warn("speed_limit_value command but no speed_limit_pin configured")
+			res.Reason = "speed_limit_pin not configured"
+			return res
+		}
 		v, e := parseNum(payload)
 		if e != nil {
 			r.log.Warn("bad speed_limit_value payload", "payload", payload)
@@ -625,6 +653,9 @@ func (r *Relay) VehicleData(vin string) (map[string]any, error) {
 	if r.fleetAPI == "" {
 		return nil, fmt.Errorf("fleet_api_url not set")
 	}
+	if !urlSafeVIN(vin) {
+		return nil, fmt.Errorf("malformed VIN")
+	}
 	tok, err := r.tm.token()
 	if err != nil {
 		return nil, fmt.Errorf("token: %w", err)
@@ -682,7 +713,7 @@ func (r *Relay) TelemetryConfig(vin string) (map[string]any, error) {
 	if r.fleetAPI == "" {
 		return nil, fmt.Errorf("fleet_api_url not set")
 	}
-	if len(r.knownVINs) > 0 && !r.knownVINs[vin] {
+	if !urlSafeVIN(vin) || (len(r.knownVINs) > 0 && !r.knownVINs[vin]) {
 		return nil, fmt.Errorf("unknown VIN")
 	}
 	tok, err := r.tm.token()
@@ -715,6 +746,9 @@ func (r *Relay) getVehicle(vin string) (vehicleSummary, error) {
 	var vs vehicleSummary
 	if r.fleetAPI == "" {
 		return vs, fmt.Errorf("fleet_api_url not set")
+	}
+	if !urlSafeVIN(vin) {
+		return vs, fmt.Errorf("malformed VIN")
 	}
 	tok, err := r.tm.token()
 	if err != nil {
@@ -771,7 +805,9 @@ func (r *Relay) lidOpen(vin, sub string) (open, known bool) {
 		return false, false
 	}
 	snap, ok := r.store.Snapshot(vin)
-	if !ok {
+	// Restored state came from the state file, not the car: the lid may have
+	// moved while the gateway was down, and actuate_trunk toggles.
+	if !ok || snap.Restored {
 		return false, false
 	}
 	open, known = snap.BoolMap(store.FieldDoorState)[sub]
@@ -790,8 +826,32 @@ func (r *Relay) latlon(vin string) (float64, float64, bool) {
 	return snap.Location()
 }
 
+// parseNum parses a numeric payload. NaN and ±Inf parse as floats but are
+// not values any command takes; int() of them is undefined.
 func parseNum(p string) (float64, error) {
-	return strconv.ParseFloat(strings.TrimSpace(p), 64)
+	f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+	if err != nil {
+		return 0, err
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("not a finite number: %q", p)
+	}
+	return f, nil
+}
+
+// urlSafeVIN reports whether vin is non-empty ASCII letters and digits only,
+// so it cannot change the shape of a URL it is placed in.
+func urlSafeVIN(vin string) bool {
+	if vin == "" || len(vin) > 32 {
+		return false
+	}
+	for i := 0; i < len(vin); i++ {
+		c := vin[i]
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // navigate sends a destination (address or "lat,lon") to the car. navigation_request

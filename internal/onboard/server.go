@@ -119,12 +119,37 @@ func (s *Store) publicPEM() ([]byte, error)   { return os.ReadFile(s.publicPath(
 func (s *Store) clientSecret() string         { b, _ := os.ReadFile(s.secretPath()); return string(b) }
 func (s *Store) saveSecret(v string) error    { return atomicWrite(s.secretPath(), []byte(v), 0o600) }
 
+// atomicWrite replaces path with b. Each call writes its own temp file: a
+// fixed name let two concurrent saves write into one file, and the second
+// writer's open descriptor kept changing the file after the first renamed it.
 func atomicWrite(path string, b []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, mode); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp := f.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	ok = true
+	return nil
 }
 
 // Server is the onboarding wizard.
@@ -232,8 +257,11 @@ func (s *Server) auth(next http.Handler) http.Handler {
 // Requests without the header (curl, older clients) are let through.
 func (s *Server) sameSite(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// same-site is a sibling origin (another subdomain), which is just as
+		// foreign to this wizard and gets the same cached credentials.
+		site := r.Header.Get("Sec-Fetch-Site")
 		if r.Method != http.MethodGet && r.Method != http.MethodHead &&
-			r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			(site == "cross-site" || site == "same-site") {
 			s.log.Warn("rejected cross-site onboarding request", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 			http.Error(w, "forbidden: cross-site request", http.StatusForbidden)
 			return
@@ -325,7 +353,11 @@ func (s *Server) saveDomain(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 	s.store.mu.Lock()
-	if s.store.st.HasKeys && r.FormValue("confirm") != "replace" {
+	// The key file decides, not only state.json: with that file lost or
+	// corrupt, HasKeys reads false while the paired key is still on disk.
+	_, keyErr := os.Stat(s.store.privatePath())
+	hasKeys := s.store.st.HasKeys || keyErr == nil
+	if hasKeys && r.FormValue("confirm") != "replace" {
 		s.store.mu.Unlock()
 		s.render(w, r, "✗ A keypair already exists, and every paired car trusts it. A new one means pairing every car again. Tick the box to confirm.")
 		return
@@ -575,7 +607,8 @@ func (s *Server) saveRefreshToken(tok string) error {
 	s.tokenMu.Lock()
 	defer s.tokenMu.Unlock()
 	if s.opts.TokenCache == "" {
-		return nil
+		// Returning nil here reported "saved" for a token stored nowhere.
+		return fmt.Errorf("no token_cache path is configured, so the token cannot be stored")
 	}
 	return atomicWrite(s.opts.TokenCache, []byte(tok), 0o600)
 }

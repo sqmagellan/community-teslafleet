@@ -56,6 +56,12 @@ type sentAt struct {
 	at      time.Time
 }
 
+// maxPending caps the commands waiting for one car. Set-state keys merge, so
+// only momentary presses can pile up; past this many, a caller is looping
+// faster than the car answers and the extra presses would land long after
+// they were meant.
+const maxPending = 32
+
 // NewDispatcher wraps handle, which is normally (*Relay).Handle.
 func NewDispatcher(handle func(vin, key, payload string) Result, lim Limits, log *slog.Logger) *Dispatcher {
 	return &Dispatcher{handle: handle, limits: lim, log: log, now: time.Now, cars: map[string]*carQueue{}}
@@ -80,6 +86,15 @@ func (d *Dispatcher) Submit(vin, key, payload string, done func(Result)) {
 				break
 			}
 		}
+	}
+	if replaced == nil && len(q.pending) >= maxPending {
+		d.mu.Unlock()
+		d.log.Warn("command refused: queue full", "vin", vin, "key", key, "pending", maxPending)
+		if done != nil {
+			done(Result{Key: key, Payload: payload, Outcome: OutcomeRejected,
+				Reason: fmt.Sprintf("command queue full (%d waiting)", maxPending)})
+		}
+		return
 	}
 	if replaced == nil {
 		q.pending = append(q.pending, &job{key: key, payload: payload, done: done})

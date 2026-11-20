@@ -285,13 +285,22 @@ func (p *Publisher) uid(v config.Vehicle, key string) string {
 }
 
 // vinForPubID maps a public identifier (from a command topic) back to its VIN.
+// Two display names can share a slug ("Road Car", "Road-Car"); such an id
+// names no single car, so it resolves to none rather than to the first match.
 func (p *Publisher) vinForPubID(id string) (string, bool) {
+	found := ""
 	for _, v := range p.effectiveVehicles() {
-		if p.pubID(v) == id {
-			return v.VIN, true
+		if p.pubID(v) != id {
+			continue
 		}
+		if found != "" && found != v.VIN {
+			p.log.Error("two vehicles share one device id; commands for it are refused",
+				"id", id, "vins", []string{found, v.VIN})
+			return "", false
+		}
+		found = v.VIN
 	}
-	return "", false
+	return found, found != ""
 }
 
 func (p *Publisher) stateTopic(id string) string {
@@ -550,20 +559,25 @@ func (p *Publisher) handleCommand(_ paho.Client, m paho.Message) {
 		p.log.Warn("ignoring retained command message", "topic", m.Topic())
 		return
 	}
-	parts := strings.Split(m.Topic(), "/")
-	// <base>/<pubID>/cmd/<key>/set
-	if len(parts) != 5 || parts[2] != "cmd" || parts[4] != "set" {
-		return
-	}
-	vin, ok := p.vinForPubID(parts[1])
+	// <base>/<pubID>/cmd/<key>/set. The base may span several levels
+	// ("teslafleet/home"), so strip it as a prefix rather than count levels.
+	rest, ok := strings.CutPrefix(m.Topic(), p.cfg.HA.StateTopicBase+"/")
 	if !ok {
-		p.log.Warn("command for unknown device id", "id", parts[1])
 		return
 	}
-	key, payload := parts[3], string(m.Payload())
+	parts := strings.Split(rest, "/")
+	if len(parts) != 4 || parts[1] != "cmd" || parts[3] != "set" {
+		return
+	}
+	id := parts[0]
+	vin, ok := p.vinForPubID(id)
+	if !ok {
+		p.log.Warn("command for unknown or ambiguous device id", "id", id)
+		return
+	}
+	key, payload := parts[2], string(m.Payload())
 	// The dispatcher runs the command on the car's own worker, off the paho
 	// callback, so a slow command does not block incoming messages.
-	id := parts[1]
 	p.dispatch.Submit(vin, key, payload, func(res commands.Result) { p.publishResult(id, res) })
 }
 
@@ -584,7 +598,12 @@ func (p *Publisher) publishResult(pubID string, res commands.Result) {
 		return
 	}
 	topic := fmt.Sprintf("%s/%s/cmd_result", p.cfg.HA.StateTopicBase, pubID)
-	if tok := p.client.Publish(topic, 0, false, body); tok.Wait() && tok.Error() != nil {
+	// Bounded: this runs on the car's dispatcher worker, and an unbounded Wait
+	// on a broker that never answers would stall every later command for it.
+	tok := p.client.Publish(topic, 0, false, body)
+	if !tok.WaitTimeout(5 * time.Second) {
+		p.log.Warn("command result publish timed out", "topic", topic)
+	} else if tok.Error() != nil {
 		p.log.Error("command result publish failed", "topic", topic, "err", tok.Error())
 	}
 }
