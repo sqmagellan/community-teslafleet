@@ -847,7 +847,8 @@ func urlSafeVIN(vin string) bool {
 	}
 	for i := 0; i < len(vin); i++ {
 		c := vin[i]
-		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9') {
+		alnum := c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+		if !alnum {
 			return false
 		}
 	}
