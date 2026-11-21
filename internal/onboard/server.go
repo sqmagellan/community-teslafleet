@@ -122,6 +122,23 @@ func (s *Store) generateKeys() error {
 	return s.saveState()
 }
 
+// keysPresent reports whether a keypair exists; the caller holds s.mu. The
+// key files decide, not only state.json: with that file lost or corrupt,
+// HasKeys reads false while the paired key is still on disk. The public key
+// alone counts, because the private key may live only with the
+// vehicle-command proxy.
+func (s *Store) keysPresent() bool {
+	if s.st.HasKeys {
+		return true
+	}
+	for _, p := range []string{s.privatePath(), s.publicPath()} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) publicPEM() ([]byte, error)   { return os.ReadFile(s.publicPath()) }
 func (s *Store) clientSecret() string         { b, _ := os.ReadFile(s.secretPath()); return string(b) }
 func (s *Store) saveSecret(v string) error    { return atomicWrite(s.secretPath(), []byte(v), 0o600) }
@@ -324,6 +341,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, notice string) {
 	s.store.mu.Lock()
 	st := s.store.st
 	st.Notice = notice
+	st.HasKeys = s.store.keysPresent()
 	s.store.mu.Unlock()
 	st.SecretSet = st.SecretSet || s.opts.ClientSecret != ""
 	v := view{Base: r.Header.Get("X-Ingress-Path"), State: st, Profiles: enroll.Profiles}
@@ -370,11 +388,7 @@ func (s *Server) saveDomain(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 	s.store.mu.Lock()
-	// The key file decides, not only state.json: with that file lost or
-	// corrupt, HasKeys reads false while the paired key is still on disk.
-	_, keyErr := os.Stat(s.store.privatePath())
-	hasKeys := s.store.st.HasKeys || keyErr == nil
-	if hasKeys && r.FormValue("confirm") != "replace" {
+	if s.store.keysPresent() && r.FormValue("confirm") != "replace" {
 		s.store.mu.Unlock()
 		s.render(w, r, "✗ A keypair already exists, and every paired car trusts it. A new one means pairing every car again. Tick the box to confirm.")
 		return
