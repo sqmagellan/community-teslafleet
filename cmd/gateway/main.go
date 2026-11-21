@@ -258,6 +258,7 @@ func main() {
 			TokenCache: cfg.Commands.TokenCache,
 			CAFile:     cfg.Onboard.CAFile,
 			ProxyTLS:   onboardProxyTLS(cfg.Commands, log),
+			VINs:       vins,
 
 			DefaultProfile: cfg.Onboard.DefaultProfile,
 		}
