@@ -108,6 +108,10 @@ type Onboard struct {
 	// telemetry server. Tesla rejects a fleet_telemetry_config without one.
 	// Defaults to stream.tls_cert when that is set.
 	CAFile string `yaml:"ca_file"`
+	// RedirectURI is the redirect URI registered in the Tesla app. Setting it
+	// turns on the wizard's Sign in with Tesla; the page need not exist, since
+	// the operator pastes the redirected address back into the wizard.
+	RedirectURI string `yaml:"redirect_uri"`
 }
 
 // Recording appends every telemetry field update to a JSONL file for debugging
@@ -611,6 +615,7 @@ func applyEnv(c *Config) {
 	setStr(&c.Onboard.WellKnownListen, "TGW_ONBOARD_WELLKNOWN_LISTEN")
 	setStr(&c.Onboard.DefaultProfile, "TGW_ONBOARD_DEFAULT_PROFILE")
 	setStr(&c.Onboard.CAFile, "TGW_ONBOARD_CA_FILE")
+	setStr(&c.Onboard.RedirectURI, "TGW_ONBOARD_REDIRECT_URI")
 	setBool(&c.Stream.Embedded, "TGW_STREAM_EMBEDDED")
 	setStr(&c.Stream.FleetTelemetryBin, "TGW_STREAM_FLEET_TELEMETRY_BIN")
 	setStr(&c.Stream.FleetTelemetryConfig, "TGW_STREAM_FLEET_TELEMETRY_CONFIG")

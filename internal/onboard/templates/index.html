@@ -92,8 +92,20 @@ The wizard does what it can and checks it. Some steps happen on Tesla's site or 
   <h2>5 · Refresh token
     {{if .State.TokenSet}}<span class="badge ok">saved</span>{{else}}<span class="badge todo">todo</span>{{end}}
   </h2>
+  {{if .RedirectURI}}
+  <p class="muted">Sign in with Tesla and allow <code>{{.Scopes}}</code>. Tesla then sends the
+  browser to <code>{{.RedirectURI}}</code> (the app's registered redirect URI; the page may show
+  an error). Copy that whole address from the address bar and paste it here within 10 minutes.</p>
+  <form method="post" action="{{.Base}}/signin" target="_blank"><button type="submit">Sign in with Tesla</button></form>
+  <form method="post" action="{{.Base}}/signin/finish">
+    <input name="redirected_url" type="password" autocomplete="off" placeholder="Address Tesla sent you to">
+    <button type="submit">Finish sign-in</button>
+  </form>
+  <p class="muted">Or paste a refresh token you obtained yourself with the same scopes.</p>
+  {{else}}
   <p class="muted">Paste a refresh token from Tesla's authorization-code flow with the scopes
-  <code>offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds</code>.</p>
+  <code>{{.Scopes}}</code>. Set <code>onboard.redirect_uri</code> to sign in from here instead.</p>
+  {{end}}
   <form method="post" action="{{.Base}}/token">
     <input name="refresh_token" type="password" placeholder="Refresh token">
     <button type="submit">Save token</button>

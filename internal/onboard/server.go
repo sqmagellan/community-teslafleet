@@ -1,9 +1,11 @@
 package onboard
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
 	"crypto/tls"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -12,11 +14,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/LasseLegarth/community-teslafleet/internal/enroll"
 )
@@ -42,6 +46,13 @@ type Options struct {
 	// ClientSecret is the config's secret (TGW_TESLA_CLIENT_SECRET or its _FILE
 	// form), used when none was saved in the wizard, so it never has to be typed in.
 	ClientSecret string
+	// RedirectURI is the redirect URI registered in the Tesla app. With it the
+	// wizard offers Sign in with Tesla: Tesla sends the browser there after
+	// login, and the operator pastes that address back. The page need not exist.
+	RedirectURI string
+	// Commands is true when the command relay runs, so a sign-in also asks for
+	// the command scopes. Read-only, the token never holds them.
+	Commands bool
 	// ProxyTLS verifies the vehicle-command proxy on enroll, the same way the
 	// command relay does. Nil means the system roots, never "skip".
 	ProxyTLS *tls.Config
@@ -166,7 +177,22 @@ type Server struct {
 	log     *slog.Logger
 	tmpl    *template.Template
 	tokenMu sync.Mutex // serializes refresh-and-persist against itself
+
+	signInMu sync.Mutex
+	signIn   *pendingSignIn   // the sign-in started last, until finished
+	now      func() time.Time // the clock, replaceable in tests
 }
+
+// pendingSignIn is a Sign in with Tesla in progress: the state sent to Tesla,
+// which the pasted address must carry back, and when it was sent.
+type pendingSignIn struct {
+	state string
+	at    time.Time
+}
+
+// signInTTL bounds how long a started sign-in can be finished. Tesla's
+// authorization code expires within minutes anyway.
+const signInTTL = 10 * time.Minute
 
 func NewServer(opts Options, log *slog.Logger) (*Server, error) {
 	store, err := newStore(opts.DataDir)
@@ -180,7 +206,7 @@ func NewServer(opts Options, log *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{store: store, opts: opts, log: log, tmpl: tmpl}, nil
+	return &Server{store: store, opts: opts, log: log, tmpl: tmpl, now: time.Now}, nil
 }
 
 // client builds a Tesla API client from config + the wizard's stored creds.
@@ -227,6 +253,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /probe", s.probe)
 	mux.HandleFunc("POST /register-partner", s.registerPartner)
 	mux.HandleFunc("POST /token", s.pasteToken)
+	mux.HandleFunc("POST /signin", s.startSignIn)
+	mux.HandleFunc("POST /signin/finish", s.finishSignIn)
 	mux.HandleFunc("POST /vehicles", s.listVehicles)
 	mux.HandleFunc("POST /enrollment", s.saveEnrollment)
 	mux.HandleFunc("POST /enroll", s.enroll)
@@ -318,6 +346,9 @@ type view struct {
 	Profile    string // saved profile, else the default
 	Profiles   []string
 	Estimate   enroll.Estimate
+	// RedirectURI offers Sign in with Tesla when set; Scopes is what it asks for.
+	RedirectURI string
+	Scopes      string
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, notice string) {
@@ -326,7 +357,8 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, notice string) {
 	st.Notice = notice
 	s.store.mu.Unlock()
 	st.SecretSet = st.SecretSet || s.opts.ClientSecret != ""
-	v := view{Base: r.Header.Get("X-Ingress-Path"), State: st, Profiles: enroll.Profiles}
+	v := view{Base: r.Header.Get("X-Ingress-Path"), State: st, Profiles: enroll.Profiles,
+		RedirectURI: s.opts.RedirectURI, Scopes: userScopes(s.opts.Commands)}
 	if st.Domain != "" {
 		v.PairingURL = pairingURL(st.Domain)
 	}
@@ -456,6 +488,83 @@ func (s *Server) pasteToken(w http.ResponseWriter, r *http.Request) {
 		msg = "✓ Refresh token saved and in use. No restart needed."
 	}
 	s.render(w, r, msg)
+}
+
+// startSignIn sends the browser to Tesla's login with a fresh state. Only the
+// latest sign-in can be finished.
+func (s *Server) startSignIn(w http.ResponseWriter, r *http.Request) {
+	if s.opts.RedirectURI == "" {
+		s.render(w, r, "✗ Sign in with Tesla needs onboard.redirect_uri, the redirect URI registered in the Tesla app.")
+		return
+	}
+	s.store.mu.Lock()
+	clientID := s.store.st.ClientID
+	s.store.mu.Unlock()
+	if clientID == "" || s.clientSecret() == "" || s.fleetAPI() == "" {
+		s.render(w, r, "✗ Need client_id, client_secret and a Fleet API URL first.")
+		return
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		s.render(w, r, "✗ Could not start the sign-in: "+err.Error())
+		return
+	}
+	state := hex.EncodeToString(b)
+	s.signInMu.Lock()
+	s.signIn = &pendingSignIn{state: state, at: s.now()}
+	s.signInMu.Unlock()
+	http.Redirect(w, r, s.client().authorizeURL(s.opts.RedirectURI, state, userScopes(s.opts.Commands)),
+		http.StatusSeeOther)
+}
+
+// finishSignIn takes the address Tesla redirected the browser to, checks it
+// carries the pending sign-in's state, and exchanges its code for a refresh
+// token. A state mismatch or expiry spends the pending sign-in; pasting some
+// other address does not.
+func (s *Server) finishSignIn(w http.ResponseWriter, r *http.Request) {
+	u, err := url.Parse(strings.TrimSpace(r.FormValue("redirected_url")))
+	want, _ := url.Parse(s.opts.RedirectURI)
+	if s.opts.RedirectURI == "" || err != nil || want == nil ||
+		u.Scheme != want.Scheme || u.Host != want.Host || u.Path != want.Path {
+		s.render(w, r, "✗ Paste the whole address Tesla sent you to; it starts with "+s.opts.RedirectURI)
+		return
+	}
+	s.signInMu.Lock()
+	p := s.signIn
+	s.signIn = nil
+	s.signInMu.Unlock()
+	q := u.Query()
+	switch {
+	case p == nil:
+		s.render(w, r, "✗ No sign-in is in progress. Press Sign in with Tesla first.")
+		return
+	case subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(p.state)) != 1:
+		s.render(w, r, "✗ That address belongs to a different sign-in. Press Sign in with Tesla again.")
+		return
+	case s.now().Sub(p.at) > signInTTL:
+		s.render(w, r, "✗ The sign-in expired. Press Sign in with Tesla again.")
+		return
+	case q.Get("error") != "":
+		s.render(w, r, "✗ Tesla refused the sign-in: "+q.Get("error")+" "+q.Get("error_description"))
+		return
+	case q.Get("code") == "":
+		s.render(w, r, "✗ The address has no authorization code. Press Sign in with Tesla again.")
+		return
+	}
+	tok, err := s.client().exchangeCode(q.Get("code"), s.opts.RedirectURI)
+	if err != nil {
+		s.render(w, r, "✗ Code exchange failed: "+err.Error())
+		return
+	}
+	if err := s.saveRefreshToken(tok); err != nil {
+		s.render(w, r, "✗ Could not save the refresh token: "+err.Error())
+		return
+	}
+	s.store.mu.Lock()
+	s.store.st.TokenSet = true
+	_ = s.store.saveState()
+	s.store.mu.Unlock()
+	s.render(w, r, "✓ Signed in with Tesla; refresh token saved.")
 }
 
 func (s *Server) listVehicles(w http.ResponseWriter, r *http.Request) {

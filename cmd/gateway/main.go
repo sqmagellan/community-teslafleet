@@ -258,6 +258,8 @@ func main() {
 			EnrollFile:   cfg.Commands.EnrollFile,
 			TokenCache:   cfg.Commands.TokenCache,
 			CAFile:       cfg.Onboard.CAFile,
+			RedirectURI:  cfg.Onboard.RedirectURI,
+			Commands:     cfg.Commands.Enabled,
 			ProxyTLS:     onboardProxyTLS(cfg.Commands, log),
 
 			DefaultProfile: cfg.Onboard.DefaultProfile,
