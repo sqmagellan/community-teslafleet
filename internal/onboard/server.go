@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +43,9 @@ type Options struct {
 	// ClientSecret is the config's secret (TGW_TESLA_CLIENT_SECRET or its _FILE
 	// form), used when none was saved in the wizard, so it never has to be typed in.
 	ClientSecret string
+	// VINs are the cars the gateway is configured for. Step 7 enrolls those of
+	// them that are on the account; with none configured, every listed car.
+	VINs []string
 	// ProxyTLS verifies the vehicle-command proxy on enroll, the same way the
 	// command relay does. Nil means the system roots, never "skip".
 	ProxyTLS *tls.Config
@@ -335,6 +339,7 @@ type view struct {
 	Profile    string // saved profile, else the default
 	Profiles   []string
 	Estimate   enroll.Estimate
+	Enrolling  []teslaVehicle // the cars step 7 enrolls
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, notice string) {
@@ -357,6 +362,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, notice string) {
 	}
 	v.Profile = prof
 	v.Estimate = enroll.EstimateCost(enroll.Generate(prof, st.Domain, st.Port))
+	v.Enrolling = s.enrolling(st.Vehicles)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "index.html", v); err != nil {
 		s.log.Error("render", "err", err)
@@ -545,12 +551,18 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.mu.Lock()
-	vins := make([]string, 0, len(s.store.st.Vehicles))
-	for _, v := range s.store.st.Vehicles {
+	listed := len(s.store.st.Vehicles)
+	cars := s.enrolling(s.store.st.Vehicles)
+	s.store.mu.Unlock()
+	vins := make([]string, 0, len(cars))
+	for _, v := range cars {
 		vins = append(vins, v.VIN)
 	}
-	s.store.mu.Unlock()
 	body, err := enroll.Wrap(payload, vins)
+	if errors.Is(err, enroll.ErrNoVINs) && listed > 0 {
+		s.render(w, r, "✗ None of the configured cars ("+strings.Join(s.opts.VINs, ", ")+") is on this account.")
+		return
+	}
 	if errors.Is(err, enroll.ErrNoVINs) {
 		s.render(w, r, "✗ No cars to enroll. Run \"List vehicles\" in step 6 first.")
 		return
@@ -569,6 +581,21 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, "✓ Telemetry config sent. The car adopts it within a minute.")
+}
+
+// enrolling is the listed cars step 7 enrolls: the configured ones, or all
+// when none are configured.
+func (s *Server) enrolling(listed []teslaVehicle) []teslaVehicle {
+	if len(s.opts.VINs) == 0 {
+		return listed
+	}
+	out := make([]teslaVehicle, 0, len(listed))
+	for _, v := range listed {
+		if slices.Contains(s.opts.VINs, v.VIN) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // chain returns the certificate chain for the enrollment config: the pasted

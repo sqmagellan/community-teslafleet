@@ -139,6 +139,7 @@ The wizard does what it can and checks it. Some steps happen on Tesla's site or 
   <h2>7 · Enroll telemetry <span class="badge todo">last</span></h2>
   <p class="muted">Sends the config from step 6b to each paired car. The car adopts it
   within a minute.</p>
+  {{if .Enrolling}}<p>Cars to enroll:</p><ul>{{range .Enrolling}}<li><code>{{.VIN}}</code>: {{.DisplayName}}</li>{{end}}</ul>{{end}}
   <form method="post" action="{{.Base}}/enroll"><button type="submit">Enroll telemetry</button></form>
 </div>
 
