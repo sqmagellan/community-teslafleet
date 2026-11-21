@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +19,7 @@ func itoa(n int) string { return strconv.Itoa(n) }
 // postEnroll sends a fleet_telemetry_config to the vehicle-command proxy (which signs
 // it with the partner key). tc verifies the proxy as the command relay does; it
 // used to skip verification while sending the OAuth token.
-func postEnroll(proxyURL, accessToken string, payload []byte, tc *tls.Config) error {
+func postEnroll(proxyURL, accessToken string, payload []byte, tc *tls.Config) (enrollResult, error) {
 	if tc == nil {
 		tc = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
@@ -29,20 +30,52 @@ func postEnroll(proxyURL, accessToken string, payload []byte, tc *tls.Config) er
 	url := strings.TrimRight(proxyURL, "/") + "/api/1/vehicles/fleet_telemetry_config"
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return err
+		return enrollResult{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return enrollResult{}, err
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(rb)))
+		return enrollResult{}, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(rb)))
 	}
-	return nil
+	var out struct {
+		Response *enrollResult `json:"response"`
+	}
+	if err := json.Unmarshal(rb, &out); err != nil || out.Response == nil || out.Response.Updated == nil {
+		// Accepted, in a shape we do not know: say what Tesla said.
+		return enrollResult{Raw: strings.TrimSpace(string(rb))}, nil
+	}
+	return *out.Response, nil
+}
+
+// enrollResult is Tesla's answer to a fleet_telemetry_config: how many cars
+// took it, and the skipped ones by reason (missing_key, unsupported_hardware,
+// unsupported_firmware, max_configs).
+type enrollResult struct {
+	Updated *int                `json:"updated_vehicles"`
+	Skipped map[string][]string `json:"skipped_vehicles"`
+	Raw     string              `json:"-"` // the answer, when it has neither
+}
+
+// skipped lists the skipped cars as "VIN (reason)", in a stable order.
+func (e enrollResult) skipped() []string {
+	reasons := make([]string, 0, len(e.Skipped))
+	for r := range e.Skipped {
+		reasons = append(reasons, r)
+	}
+	sort.Strings(reasons)
+	var out []string
+	for _, r := range reasons {
+		for _, vin := range e.Skipped[r] {
+			out = append(out, vin+" ("+r+")")
+		}
+	}
+	return out
 }
 
 // Tesla OAuth scopes the gateway needs (device data + commands + charging).
