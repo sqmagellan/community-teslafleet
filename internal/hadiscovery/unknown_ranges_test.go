@@ -35,16 +35,16 @@ func TestMissingBooleansRenderNone(t *testing.T) {
 	}
 }
 
-func TestPluggedInOmittedWithoutLatch(t *testing.T) {
+func TestChargeCableOmittedWithoutLatch(t *testing.T) {
 	st := buildState(store.Snapshot{Fields: map[string]store.FieldValue{}}, store.Derived{}, config.Units{})
-	if _, ok := st["plugged_in"]; ok {
-		t.Fatalf("plugged_in = %v with no latch reading, want absent", st["plugged_in"])
+	if _, ok := st["charge_cable"]; ok {
+		t.Fatalf("charge_cable = %v with no latch reading, want absent", st["charge_cable"])
 	}
 	st = buildState(store.Snapshot{Fields: map[string]store.FieldValue{
 		store.FieldChargePortLatch: {Value: "ChargePortLatchEngaged"},
 	}}, store.Derived{}, config.Units{})
-	if st["plugged_in"] != true {
-		t.Fatalf("plugged_in = %v with an engaged latch", st["plugged_in"])
+	if st["charge_cable"] != true {
+		t.Fatalf("charge_cable = %v with an engaged latch", st["charge_cable"])
 	}
 }
 

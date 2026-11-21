@@ -57,7 +57,7 @@ func TestDiscoverNewFieldsWaitsForNonNilValue(t *testing.T) {
 		"ModuleTempMax": {Value: float64(21.5)},
 		"ServiceMode":   {Value: false},
 	}})
-	raw, ok := rc.published["homeassistant/sensor/car/raw_ModuleTempMax/config"]
+	raw, ok := rc.published["homeassistant/sensor/car/module_temp_max/config"]
 	if !ok {
 		t.Fatalf("numeric field not published as sensor; topics: %v", keys(rc.published))
 	}
@@ -68,7 +68,7 @@ func TestDiscoverNewFieldsWaitsForNonNilValue(t *testing.T) {
 	if cfg["device_class"] != "temperature" || cfg["unit_of_measurement"] != "°C" || cfg["state_class"] != "measurement" {
 		t.Errorf("heuristics missing after nil first value: %v %v %v", cfg["device_class"], cfg["unit_of_measurement"], cfg["state_class"])
 	}
-	if _, ok := rc.published["homeassistant/binary_sensor/car/raw_ServiceMode/config"]; !ok {
+	if _, ok := rc.published["homeassistant/binary_sensor/car/service_mode/config"]; !ok {
 		t.Errorf("bool field not published as binary_sensor; topics: %v", keys(rc.published))
 	}
 	if !p.fieldDiscovered(v.VIN, "ModuleTempMax") || !p.fieldDiscovered(v.VIN, "ServiceMode") {

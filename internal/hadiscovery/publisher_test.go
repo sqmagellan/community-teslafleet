@@ -94,12 +94,11 @@ func TestBinarySensorValueTemplate(t *testing.T) {
 		wantWhenTrue  string // HA binary_sensor state for telemetry true
 		wantWhenFalse string
 	}{
-		{"charging", "true", "false", "value_json.charging", "on", "off"},
-		{"online", "true", "false", "value_json.online", "on", "off"},
-		{"sentry", "true", "false", "value_json.sentry", "on", "off"},
-		// locked is inverted: lock device_class on=unlocked, so payload_on is
+		{"charge_cable", "true", "false", "value_json.charge_cable", "on", "off"},
+		{"sentry_mode", "true", "false", "value_json.sentry_mode", "on", "off"},
+		// lock is inverted: lock device_class on=unlocked, so payload_on is
 		// "false" and a LOCKED car must read OFF.
-		{"locked", "false", "true", "value_json.locked", "off", "on"},
+		{"lock", "false", "true", "value_json.lock", "off", "on"},
 	}
 
 	for _, tc := range tests {

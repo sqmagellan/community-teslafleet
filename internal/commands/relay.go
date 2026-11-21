@@ -76,13 +76,13 @@ func Entities(cfg config.Commands) []Entity {
 		{Key: "media_vol_down", Component: "button", Name: "Volume down"},
 		// Switches.
 		{Key: "charging", Component: "switch", Name: "Charging", StateKey: "charging"},
-		{Key: "sentry", Component: "switch", Name: "Sentry mode", StateKey: "sentry"},
+		{Key: "sentry", Component: "switch", Name: "Sentry mode", StateKey: "sentry_mode"},
 		{Key: "steering_wheel_heater", Component: "switch", Name: "Steering wheel heater"},
 		{Key: "cabin_overheat", Component: "switch", Name: "Cabin overheat protection"},
 		{Key: "preconditioning_max", Component: "switch", Name: "Preconditioning (max)"},
 		{Key: "guest_mode", Component: "switch", Name: "Guest mode"},
 		// Lock.
-		{Key: "lock", Component: "lock", Name: "Lock", StateKey: "locked"},
+		{Key: "lock", Component: "lock", Name: "Lock", StateKey: "lock"},
 		// Climate (proper thermostat entity: on/off + target temp + current temp).
 		{Key: "climate", Component: "climate", Name: "Climate"},
 		// Covers. DoorState carries TrunkFront/TrunkRear, so all four have real state.
