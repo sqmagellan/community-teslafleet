@@ -6,6 +6,7 @@ import (
 	"unicode"
 
 	"github.com/LasseLegarth/community-teslafleet/internal/config"
+	"github.com/LasseLegarth/community-teslafleet/internal/enroll"
 	"github.com/LasseLegarth/community-teslafleet/internal/store"
 	"github.com/LasseLegarth/community-teslafleet/internal/vehicledata"
 )
@@ -32,6 +33,48 @@ type entity struct {
 	PayloadOff   string
 	ValueTmpl    string // overrides default {{ value_json.<Key> }}
 	TrackerTopic string // device_tracker: dedicated retained GPS topic suffix
+
+	// Disabled publishes enabled_by_default false: a raw value kept beside the
+	// curated entity for the same fact.
+	Disabled bool
+}
+
+// disabledByDefault are the raw values kept beside the curated entity for the
+// same fact: diagnostic, and off until someone enables them.
+var disabledByDefault = map[string]bool{
+	"soc_raw":           true, // battery_level
+	"charge_state_raw":  true, // charging_state
+	"sentry_mode_state": true, // sentry_mode
+}
+
+// retired are the curated entities this gateway no longer publishes. Their
+// discovery topics are cleared on every announce, so Home Assistant deletes
+// the entities and the broker forgets the configs. Never reuse one.
+var retired = []struct{ component, key string }{
+	{"binary_sensor", "locked"},         // now lock
+	{"binary_sensor", "sentry"},         // now sentry_mode
+	{"sensor", "sentry_mode"},           // now sentry_mode_state
+	{"binary_sensor", "plugged_in"},     // now charge_cable
+	{"binary_sensor", "driver_present"}, // now driver_seat
+	{"binary_sensor", "online"},         // sensor state says it
+	{"binary_sensor", "charging"},       // sensor charging_state says it
+	{"binary_sensor", "at_home"},        // HA's zone defines home
+}
+
+// retiredTopics lists every discovery topic to clear for one car: the retired
+// curated entities, and the raw_<Field> topics generic entities used before
+// they were keyed like curated ones.
+func retiredTopics(prefix, id string) []string {
+	var out []string
+	for _, r := range retired {
+		out = append(out, prefix+"/"+r.component+"/"+id+"/"+r.key+"/config")
+	}
+	for _, f := range enroll.Fields {
+		for _, c := range []string{"sensor", "binary_sensor"} {
+			out = append(out, prefix+"/"+c+"/"+id+"/raw_"+f+"/config")
+		}
+	}
+	return out
 }
 
 const unset = -1
@@ -120,9 +163,8 @@ type boolItem struct {
 }
 
 var boolItems = []boolItem{
-	{store.FieldLocked, "locked", "Locked", "lock", "", true},
-	{store.FieldDriverSeatOccupied, "driver_present", "Driver present", "occupancy", "", false},
-	{store.FieldLocatedAtHome, "at_home", "At home", "", "", false},
+	{store.FieldLocked, "lock", "Lock", "lock", "", true},
+	{store.FieldDriverSeatOccupied, "driver_seat", "Driver seat", "occupancy", "", false},
 }
 
 // enumItem is a curated string-enum field. norm normalizes the raw stream value to
@@ -141,7 +183,7 @@ var enumItems = []enumItem{
 	{store.FieldChargeState, "charging_state", "Charging state", "", nil, func(v any) string { return store.ChargeStateString(v) }},
 	{store.FieldChargeStateRaw, "charge_state_raw", "Charge state (raw)", "diagnostic", nil, func(v any) string { return normalizeEnum(asStr(v)) }},
 	{store.FieldCenterDisplay, "display_state", "Display state", "diagnostic", nil, func(v any) string { return normalizeEnum(asStr(v)) }},
-	{store.FieldSentryMode, "sentry_mode", "Sentry mode", "", nil, func(v any) string { return normalizeEnum(asStr(v)) }},
+	{store.FieldSentryMode, "sentry_mode_state", "Sentry mode state", "diagnostic", nil, func(v any) string { return normalizeEnum(asStr(v)) }},
 }
 
 // doorPositions / windowPositions / tpmsPositions drive composite splitting.
@@ -177,11 +219,9 @@ func catalog(units config.Units) []entity {
 	// Derived top-level state.
 	es = append(es,
 		entity{Component: "sensor", Key: "state", Name: "State", Precision: unset},
-		entity{Component: "binary_sensor", Key: "online", Name: "Online", DeviceClass: "connectivity", PayloadOn: "true", PayloadOff: "false", Precision: unset},
-		entity{Component: "binary_sensor", Key: "charging", Name: "Charging", DeviceClass: "battery_charging", PayloadOn: "true", PayloadOff: "false", Precision: unset},
-		entity{Component: "binary_sensor", Key: "plugged_in", Name: "Plugged in", DeviceClass: "plug", PayloadOn: "true", PayloadOff: "false", Precision: unset},
+		entity{Component: "binary_sensor", Key: "charge_cable", Name: "Charge cable", DeviceClass: "plug", PayloadOn: "true", PayloadOff: "false", Precision: unset},
 		entity{Component: "binary_sensor", Key: "doors", Name: "Doors", DeviceClass: "door", PayloadOn: "true", PayloadOff: "false", Precision: unset},
-		entity{Component: "binary_sensor", Key: "sentry", Name: "Sentry", PayloadOn: "true", PayloadOff: "false", Precision: unset},
+		entity{Component: "binary_sensor", Key: "sentry_mode", Name: "Sentry mode", PayloadOn: "true", PayloadOff: "false", Precision: unset},
 		entity{Component: "sensor", Key: "charger_power", Name: "Charger power", DeviceClass: "power", Unit: "kW", StateClass: "measurement", Precision: 1},
 		entity{Component: "sensor", Key: "power", Name: "Power", DeviceClass: "power", Unit: "kW", StateClass: "measurement", Precision: 1},
 		entity{Component: "sensor", Key: "version", Name: "Software version", Category: "diagnostic", Precision: unset},
@@ -245,6 +285,9 @@ func catalog(units config.Units) []entity {
 		entity{Component: "device_tracker", Key: "destination", Name: "Destination", TrackerTopic: "destination", Precision: unset},
 		entity{Component: "device_tracker", Key: "origin", Name: "Origin", Category: "diagnostic", TrackerTopic: "origin", Precision: unset},
 	)
+	for i := range es {
+		es[i].Disabled = disabledByDefault[es[i].Key]
+	}
 	return es
 }
 
@@ -256,8 +299,7 @@ func buildState(snap store.Snapshot, d store.Derived, units config.Units) map[st
 	// offline, so a sleeping car showed as online.
 	s := map[string]any{
 		"state":    d.State,
-		"online":   d.State == "online",
-		"charging": d.Charging,
+		"charging": d.Charging, // the command relay's charging switch
 	}
 
 	// Curated numerics with quantity conversion.
@@ -347,7 +389,7 @@ func buildState(snap store.Snapshot, d store.Derived, units config.Units) map[st
 		s["climate_on"] = hvacOn(fv.Value)
 	}
 	if fv, ok := snap.Field(store.FieldSentryMode); ok {
-		s["sentry"] = store.SentryEnabled(fv.Value)
+		s["sentry_mode"] = store.SentryEnabled(fv.Value)
 	}
 	// Climate entity current + target, in raw °C (the climate entity declares unit C).
 	if v, ok := snap.Num(store.FieldInsideTemp); ok {
@@ -364,7 +406,7 @@ func buildState(snap store.Snapshot, d store.Derived, units config.Units) map[st
 	// reading at all the key is left out, so HA shows unknown rather than a
 	// confident "unplugged".
 	if fv, ok := snap.Field(store.FieldChargePortLatch); ok && fv.Value != nil {
-		s["plugged_in"] = pluggedIn(snap)
+		s["charge_cable"] = pluggedIn(snap)
 	}
 
 	// Doors composite + aggregate.
@@ -548,10 +590,11 @@ func coveredFields() map[string]bool {
 		store.FieldACChargingPower:   true, // charger_power
 		store.FieldDCChargingPower:   true, // charger_power
 		store.FieldIsClimateOn:       true, // climate_on
-		store.FieldSentryMode:        true, // sentry / sentry_mode
+		store.FieldSentryMode:          true, // sentry_mode / sentry_mode_state
+		store.FieldLocatedAtHome:       true, // not published: HA's zone defines home
 		store.FieldChargePortDoorOpen: true, // charge_port cover
-		store.FieldChargePortLatch:    true, // plugged_in
-		store.FieldChargingCableType:  true, // plugged_in
+		store.FieldChargePortLatch:     true, // charge_cable
+		store.FieldChargingCableType:   true, // charge_cable
 		store.FieldHvacLeftTempReq:    true, // climate setpoint
 		store.FieldDoorState:         true, // doors composite
 		store.FieldTpmsHardWarnings:  true, // tpms warnings composite
@@ -623,6 +666,24 @@ func normalizeEnum(s string) string {
 		return s[i+5:]
 	}
 	return s
+}
+
+// fieldKey is the entity key of a Tesla field with no curated entity: its
+// words in snake_case, ChargeEnableRequest -> charge_enable_request.
+func fieldKey(field string) string {
+	return strings.ToLower(strings.ReplaceAll(humanize(field), " ", "_"))
+}
+
+// fieldName is the same words in sentence case. A word written all in
+// capitals keeps them (AC, BMS, F); the rest are lowercase after the first.
+func fieldName(field string) string {
+	words := strings.Fields(humanize(field))
+	for i, w := range words {
+		if i > 0 && w != strings.ToUpper(w) {
+			words[i] = strings.ToLower(w)
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 // humanize converts a Tesla CamelCase telemetry field name into spaced words,

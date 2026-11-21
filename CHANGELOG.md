@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **One naming scheme for Home Assistant entities.** **Entity IDs change.** The gateway clears the old discovery topics itself, so Home Assistant deletes the old entities. Automations that use them need the new IDs.
+  - Fields without a curated entity were keyed by their Tesla name run together (`sensor.<car>_chargeenablerequest`), under `raw_<Field>` topics. They now follow the curated scheme: `charge_enable_request`, named "Charge enable request".
+  - Binary sensors are named for the thing, and the device class supplies the state words:
+    - `lock` ("Lock: Locked") replaces `locked` ("Locked: Unlocked").
+    - `sentry_mode` replaces `sentry`.
+    - `charge_cable` replaces `plugged_in`.
+    - `driver_seat` replaces `driver_present`.
+  - One entity per fact. `online`, `charging` and `at_home` are gone; use `state`, `charging_state` and the location tracker's zone. The sentry enum becomes `sentry_mode_state`. It, `soc_raw` and `charge_state_raw` are diagnostic and disabled by default.
+  - On every announce the gateway publishes an empty retained config to each retired topic.
 - **Entity IDs on Home Assistant 2026.4 and later.** Home Assistant stopped reading `object_id` in MQTT discovery, so entity IDs followed the device and entity names instead of the keys: the battery level became `sensor.<car>_battery`, not `sensor.<car>_battery_level`. Discovery now also sends `default_entity_id` (`<domain>.<car>_<key>`, lowercase), which names new entities as before. `object_id` stays for older versions. Entities that already exist keep their IDs.
 - **Telemetry config check.** Tesla deletes a car's telemetry config at the billing limit, and configs expire. Either way the car stops streaming and looks asleep. With `fleet_api_url` set, the gateway reads each configured car's config once a day (`telemetry_config_check_hours`) and reports it in `/healthz` as `telemetry_config`: `ok`, or the problem per car (`missing`, `limit_reached`, `expired`, `expires_in_3d`). The read does not wake the car.
 - **The command proxy's certificate is checked.** The gateway sends your OAuth token to the vehicle-command proxy with every command and used to accept any certificate. It now checks the certificate and its host name against `proxy_ca_file` (`TGW_TESLA_PROXY_CA_FILE`). `docker-compose.yml` mounts `./proxy/tls/cert.pem` for this, and the certificate must name `vehicle-command-proxy`. The add-on trusts the certificate it makes for its own proxy. `proxy_insecure_skip_verify` turns checking off and logs a warning on every start. `/healthz` shows `commands_proxy`.

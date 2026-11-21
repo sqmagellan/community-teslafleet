@@ -140,15 +140,15 @@ func TestGenericDiscoveryConfig(t *testing.T) {
 	if component != "sensor" {
 		t.Errorf("component = %q, want sensor", component)
 	}
-	if c["name"] != "Di Stator Temp F" {
-		t.Errorf("name = %v, want humanized", c["name"])
+	if c["name"] != "Di stator temp F" {
+		t.Errorf("name = %v, want the field's words in sentence case", c["name"])
 	}
 	// Default identifier mode is "name" → slug-based id (no VIN), e.g. "car_*".
-	if c["unique_id"] != "car_raw_DiStatorTempF" {
-		t.Errorf("unique_id = %v, want car_raw_DiStatorTempF", c["unique_id"])
+	if c["unique_id"] != "car_di_stator_temp_f" {
+		t.Errorf("unique_id = %v, want car_di_stator_temp_f", c["unique_id"])
 	}
-	if c["object_id"] != "car_DiStatorTempF" {
-		t.Errorf("object_id = %v, want car_DiStatorTempF", c["object_id"])
+	if c["object_id"] != "car_di_stator_temp_f" {
+		t.Errorf("object_id = %v, want car_di_stator_temp_f", c["object_id"])
 	}
 	if c["device_class"] != "temperature" || c["unit_of_measurement"] != "°C" {
 		t.Errorf("heuristics not applied: %v %v", c["device_class"], c["unit_of_measurement"])

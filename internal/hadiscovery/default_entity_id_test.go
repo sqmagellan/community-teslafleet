@@ -47,15 +47,14 @@ func TestDefaultEntityIDCommands(t *testing.T) {
 	}
 }
 
-// A generic entity's key is Tesla's field name, which has capitals. An
-// entity_id is lowercase, so default_entity_id is lowercased: the same id
-// Home Assistant made when it slugified object_id.
+// A generic entity's key is Tesla's field name in snake_case, so its
+// default_entity_id is lowercase like every curated one.
 func TestDefaultEntityIDGenericIsLowercase(t *testing.T) {
 	p := newTestPublisher()
 	v := config.Vehicle{VIN: "VIN1", DisplayName: "Tesla Model S"}
 	component, c := p.genericDiscoveryConfig(v, "ChargePortDoorOpen", true, nil, nil)
 	assertDefaultEntityID(t, "generic", component, c)
-	if c["default_entity_id"] != "binary_sensor.tesla_model_s_chargeportdooropen" {
+	if c["default_entity_id"] != "binary_sensor.tesla_model_s_charge_port_door_open" {
 		t.Errorf("generic default_entity_id = %v", c["default_entity_id"])
 	}
 }
