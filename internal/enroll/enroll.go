@@ -39,6 +39,7 @@ var tiers = map[string]tier{
 	"responsive": {15, 0, 240},
 	"normal":     {60, 0, 0},
 	"slow":       {300, 0, 600},
+	"rare":       {300, 0, 0}, // sent when it changes, at most every 5 minutes, never resent
 	"off":        {0, 0, 0},
 }
 
@@ -74,7 +75,9 @@ func category(f string) string {
 		f == "WheelType" || f == "EfficiencyPackage":
 		return "settings"
 	default:
-		return "diagnostic"
+		// Odometer, sentry mode, seat belts, lights: the car's state, not its
+		// internals. It used to fall into diagnostic, which eco leaves out.
+		return "state"
 	}
 }
 
@@ -84,14 +87,17 @@ func profileTier(profile, cat string) string {
 		"eco": {
 			"drive": "responsive", "nav": "slow", "energy": "normal", "climate": "slow",
 			"closure": "slow", "tpms": "slow", "media": "off", "settings": "slow", "diagnostic": "off",
+			"state": "rare",
 		},
 		"balanced": {
 			"drive": "realtime", "nav": "normal", "energy": "responsive", "climate": "normal",
 			"closure": "normal", "tpms": "slow", "media": "normal", "settings": "slow", "diagnostic": "slow",
+			"state": "slow",
 		},
 		"live": {
 			"drive": "realtime", "nav": "responsive", "energy": "responsive", "climate": "responsive",
 			"closure": "normal", "tpms": "normal", "media": "responsive", "settings": "slow", "diagnostic": "normal",
+			"state": "normal",
 		},
 	}
 	if p, ok := m[profile]; ok {
