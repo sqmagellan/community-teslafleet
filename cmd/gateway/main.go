@@ -247,17 +247,18 @@ func main() {
 	// Onboarding wizard (optional) — its own listener, off the auth-less Fleet API port.
 	if cfg.Onboard.Enabled {
 		obOpts := onboard.Options{
-			DataDir:    cfg.Onboard.DataDir,
-			Password:   cfg.Onboard.Password,
-			AuthHost:   cfg.Commands.AuthHost,
-			AuthPath:   cfg.Commands.AuthPath,
-			FleetAPI:   cfg.Commands.FleetAPIURL,
-			ClientID:   cfg.Commands.ClientID,
-			ProxyURL:   cfg.Commands.ProxyURL,
-			EnrollFile: cfg.Commands.EnrollFile,
-			TokenCache: cfg.Commands.TokenCache,
-			CAFile:     cfg.Onboard.CAFile,
-			ProxyTLS:   onboardProxyTLS(cfg.Commands, log),
+			DataDir:      cfg.Onboard.DataDir,
+			Password:     cfg.Onboard.Password,
+			AuthHost:     cfg.Commands.AuthHost,
+			AuthPath:     cfg.Commands.AuthPath,
+			FleetAPI:     cfg.Commands.FleetAPIURL,
+			ClientID:     cfg.Commands.ClientID,
+			ClientSecret: cfg.Commands.ClientSecret,
+			ProxyURL:     cfg.Commands.ProxyURL,
+			EnrollFile:   cfg.Commands.EnrollFile,
+			TokenCache:   cfg.Commands.TokenCache,
+			CAFile:       cfg.Onboard.CAFile,
+			ProxyTLS:     onboardProxyTLS(cfg.Commands, log),
 
 			DefaultProfile: cfg.Onboard.DefaultProfile,
 		}
