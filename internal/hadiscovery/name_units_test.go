@@ -13,10 +13,12 @@ func TestFieldNameAcronyms(t *testing.T) {
 		"BMSState":                   "BMS state",
 		"HvacACEnabled":              "HVAC AC enabled",
 		"GpsState":                   "GPS state",
-		"TpmsLastSeenPressureTimeFl": "TPMS last seen pressure time fl",
+		"TpmsLastSeenPressureTimeFl": "TPMS last seen pressure time FL",
 		"DiAxleSpeedF":               "DI axle speed F",
 		"DCDCEnable":                 "DCDC enable",
 		"Hvil":                       "HVIL",
+		"TpmsLastSeenPressureTimeRr": "TPMS last seen pressure time RR",
+		"DiHeatsinkTF":               "DI heatsink TF",
 	} {
 		if got := fieldName(field); got != want {
 			t.Errorf("fieldName(%s) = %q, want %q", field, got, want)

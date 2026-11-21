@@ -17,7 +17,7 @@ import (
 func TestFieldKeyAndName(t *testing.T) {
 	for _, tc := range []struct{ field, key, name string }{
 		{"ChargeEnableRequest", "charge_enable_request", "Charge enable request"},
-		{"TpmsLastSeenPressureTimeFl", "tpms_last_seen_pressure_time_fl", "TPMS last seen pressure time fl"},
+		{"TpmsLastSeenPressureTimeFl", "tpms_last_seen_pressure_time_fl", "TPMS last seen pressure time FL"},
 		{"HvacACEnabled", "hvac_ac_enabled", "HVAC AC enabled"},
 		{"DiStatorTempF", "di_stator_temp_f", "DI stator temp F"},
 		{"Setting24HourTime", "setting_24_hour_time", "Setting 24 hour time"},

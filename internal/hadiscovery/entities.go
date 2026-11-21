@@ -675,10 +675,13 @@ func fieldKey(field string) string {
 }
 
 // acronyms are written in capitals in every derived name, whatever casing the
-// Tesla field used (Bms and BMS, Hvac, Gps, Tpms, Di).
+// Tesla field used (Bms and BMS, Hvac, Gps, Tpms, Di). The wheel positions
+// FL, FR, RL and RR are codes too, like F, R, TF and TR that Tesla already
+// writes in capitals.
 var acronyms = map[string]bool{
 	"AC": true, "DC": true, "DCDC": true, "BMS": true, "GPS": true,
 	"HVAC": true, "HVIL": true, "TPMS": true, "DI": true,
+	"FL": true, "FR": true, "RL": true, "RR": true,
 }
 
 // fieldName is the same words in sentence case. An acronym, or a word Tesla
