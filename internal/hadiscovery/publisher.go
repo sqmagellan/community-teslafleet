@@ -351,6 +351,15 @@ func (p *Publisher) uid(v config.Vehicle, key string) string {
 	return base + "_" + key
 }
 
+// setEntityID names the entity's entity_id. Home Assistant 2026.4 stopped
+// reading object_id and reads default_entity_id instead: a full entity_id,
+// domain included, lowercase. object_id stays for older versions, which
+// slugify it to the same id.
+func (p *Publisher) setEntityID(c map[string]any, component, objectID string) {
+	c["object_id"] = objectID
+	c["default_entity_id"] = component + "." + strings.ToLower(objectID)
+}
+
 // vinForPubID maps a public identifier (from a command topic) back to its VIN.
 // Two display names can share a slug ("Road Car", "Road-Car"); such an id
 // names no single car, so it resolves to none rather than to the first match.
@@ -537,7 +546,6 @@ func (p *Publisher) genericDiscoveryConfig(v config.Vehicle, field string, val a
 	c := map[string]any{
 		"name":            humanize(field),
 		"unique_id":       p.uid(v, "raw_"+field),
-		"object_id":       id + "_" + field,
 		"state_topic":     p.stateTopic(id),
 		"device":          dev,
 		"origin":          origin,
@@ -546,12 +554,14 @@ func (p *Publisher) genericDiscoveryConfig(v config.Vehicle, field string, val a
 	}
 	p.setAvailability(c)
 	if _, ok := val.(bool); ok {
+		p.setEntityID(c, "binary_sensor", id+"_"+field)
 		c["payload_on"] = "true"
 		c["payload_off"] = "false"
 		// Absent renders None (unknown); see boolTemplate.
 		c["value_template"] = boolTemplate(field)
 		return "binary_sensor", c
 	}
+	p.setEntityID(c, "sensor", id+"_"+field)
 	// none, not '': see valueTemplate.
 	c["value_template"] = fmt.Sprintf("{{ value_json.%s | default(none) }}", field)
 	// The name heuristic only applies to values that are actually numeric. Enum strings
@@ -682,12 +692,12 @@ func (p *Publisher) commandDiscoveryConfig(v config.Vehicle, ce commands.Entity,
 	c := map[string]any{
 		"name":          ce.Name,
 		"unique_id":     p.uid(v, "cmd_"+ce.Key),
-		"object_id":     id + "_" + ce.Key,
 		"command_topic": cmdTopic,
 		"device":        dev,
 		"origin":        origin,
 		"qos":           1,
 	}
+	p.setEntityID(c, ce.Component, id+"_"+ce.Key)
 	p.setAvailability(c)
 	state := p.stateTopic(id)
 	switch ce.Component {
@@ -779,12 +789,12 @@ func (p *Publisher) discoveryConfig(v config.Vehicle, e entity, dev, origin map[
 	c := map[string]any{
 		"name":        e.Name,
 		"unique_id":   p.uid(v, e.Key),
-		"object_id":   id + "_" + e.Key,
 		"state_topic": p.stateTopic(id),
 		"device":      dev,
 		"origin":      origin,
 		"qos":         1,
 	}
+	p.setEntityID(c, e.Component, id+"_"+e.Key)
 	p.setAvailability(c)
 	if e.DeviceClass != "" {
 		c["device_class"] = e.DeviceClass
