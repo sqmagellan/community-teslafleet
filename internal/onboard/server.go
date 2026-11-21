@@ -537,11 +537,32 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "✗ Token refresh failed: "+err.Error())
 		return
 	}
-	if err := postEnroll(s.opts.ProxyURL, at, body, s.opts.ProxyTLS); err != nil {
+	res, err := postEnroll(s.opts.ProxyURL, at, body, s.opts.ProxyTLS)
+	if err != nil {
 		s.render(w, r, "✗ Enroll failed: "+err.Error())
 		return
 	}
-	s.render(w, r, "✓ Telemetry config sent. The car adopts it within a minute.")
+	s.render(w, r, enrollNotice(res))
+}
+
+// enrollNotice reports Tesla's answer: a skipped car needs action (the key
+// paired, newer firmware, a free config slot), so it is never hidden behind
+// "sent".
+func enrollNotice(res enrollResult) string {
+	if res.Updated == nil {
+		return "✓ Telemetry config sent. Tesla answered: " + res.Raw
+	}
+	msg := "Telemetry config taken by " + itoa(*res.Updated) + " car(s); a car adopts it once awake."
+	if *res.Updated > 0 {
+		msg = "✓ " + msg
+	} else {
+		msg = "✗ " + msg
+	}
+	if sk := res.skipped(); len(sk) > 0 {
+		msg += " Tesla skipped " + strings.Join(sk, ", ") +
+			". missing_key: pair the key with the link in step 6, then enroll again."
+	}
+	return msg
 }
 
 // chain returns the certificate chain for the enrollment config: the pasted
