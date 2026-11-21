@@ -674,12 +674,23 @@ func fieldKey(field string) string {
 	return strings.ToLower(strings.ReplaceAll(humanize(field), " ", "_"))
 }
 
-// fieldName is the same words in sentence case. A word written all in
-// capitals keeps them (AC, BMS, F); the rest are lowercase after the first.
+// acronyms are written in capitals in every derived name, whatever casing the
+// Tesla field used (Bms and BMS, Hvac, Gps, Tpms, Di).
+var acronyms = map[string]bool{
+	"AC": true, "DC": true, "DCDC": true, "BMS": true, "GPS": true,
+	"HVAC": true, "HVIL": true, "TPMS": true, "DI": true,
+}
+
+// fieldName is the same words in sentence case. An acronym, or a word Tesla
+// wrote all in capitals (F, TF), is in capitals; the rest are lowercase after
+// the first.
 func fieldName(field string) string {
 	words := strings.Fields(humanize(field))
 	for i, w := range words {
-		if i > 0 && w != strings.ToUpper(w) {
+		switch up := strings.ToUpper(w); {
+		case acronyms[up]:
+			words[i] = up
+		case i > 0 && w != up:
 			words[i] = strings.ToLower(w)
 		}
 	}
@@ -732,6 +743,13 @@ func humanize(name string) string {
 // quantities, which are all curated, so generic distance/speed stay unit-less here.
 func genericClassUnit(name string) (deviceClass, unit string) {
 	switch {
+	// A unit word in the name decides first: CurrentLimitMph is a speed, not
+	// a current. The value stays in that unit; Home Assistant converts speed
+	// and distance to its own unit system.
+	case strings.Contains(name, "Mph"):
+		return "speed", "mph"
+	case strings.Contains(name, "Miles"):
+		return "distance", "mi"
 	case strings.Contains(name, "Temp"):
 		return "temperature", "°C"
 	case strings.Contains(name, "Voltage"), strings.HasPrefix(name, "DiVBat"):

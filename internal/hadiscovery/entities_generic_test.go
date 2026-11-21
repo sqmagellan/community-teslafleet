@@ -140,7 +140,7 @@ func TestGenericDiscoveryConfig(t *testing.T) {
 	if component != "sensor" {
 		t.Errorf("component = %q, want sensor", component)
 	}
-	if c["name"] != "Di stator temp F" {
+	if c["name"] != "DI stator temp F" {
 		t.Errorf("name = %v, want the field's words in sentence case", c["name"])
 	}
 	// Default identifier mode is "name" → slug-based id (no VIN), e.g. "car_*".
