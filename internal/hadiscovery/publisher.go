@@ -562,6 +562,20 @@ func (p *Publisher) genericDiscoveryConfig(v config.Vehicle, field string, val a
 		return "binary_sensor", c
 	}
 	p.setEntityID(c, "sensor", id+"_"+fieldKey(field))
+	// A Time field is a moment, whatever else its name says
+	// (TpmsLastSeenPressureTime* is not a pressure): an epoch value, in
+	// seconds or milliseconds, is a timestamp; any other value has no class.
+	if isTimeField(field) {
+		if f, ok := store.ToFloat(val); ok && f >= 1e9 {
+			c["device_class"] = "timestamp"
+			c["value_template"] = fmt.Sprintf("{%% set t = value_json.%s | default(none) %%}"+
+				"{{ none if t is none or t | float(0) < 1e9 else "+
+				"((t | float / (1000 if t | float > 1e11 else 1)) | timestamp_custom('%%Y-%%m-%%dT%%H:%%M:%%S+00:00', false)) }}", field)
+			return "sensor", c
+		}
+		c["value_template"] = fmt.Sprintf("{{ value_json.%s | default(none) }}", field)
+		return "sensor", c
+	}
 	// none, not '': see valueTemplate.
 	c["value_template"] = fmt.Sprintf("{{ value_json.%s | default(none) }}", field)
 	// The name heuristic only applies to values that are actually numeric. Enum strings

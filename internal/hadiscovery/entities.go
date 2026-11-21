@@ -741,6 +741,17 @@ func humanize(name string) string {
 	return b.String()
 }
 
+// isTimeField reports whether a field's name has the word Time
+// (ScheduledDepartureTime, TpmsLastSeenPressureTimeFl).
+func isTimeField(field string) bool {
+	for _, w := range strings.Fields(humanize(field)) {
+		if w == "Time" {
+			return true
+		}
+	}
+	return false
+}
+
 // genericClassUnit applies best-effort device_class + unit heuristics by field name
 // for the diagnostic long tail. The display system only affects the few converted
 // quantities, which are all curated, so generic distance/speed stay unit-less here.
