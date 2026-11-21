@@ -45,8 +45,22 @@ func postEnroll(proxyURL, accessToken string, payload []byte, tc *tls.Config) er
 	return nil
 }
 
-// Tesla OAuth scopes the gateway needs (device data + commands + charging).
-const oauthScopes = "openid offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds"
+// Tesla OAuth scopes. readScopes is what streaming needs: live data, and
+// location for the location signals the profiles enroll. commandScopes is
+// added only when the command relay uses the token too.
+const (
+	readScopes    = "openid offline_access vehicle_device_data vehicle_location"
+	commandScopes = "vehicle_cmds vehicle_charging_cmds"
+	oauthScopes   = readScopes + " " + commandScopes
+)
+
+// userScopes is the scope a user signs in with.
+func userScopes(commands bool) string {
+	if commands {
+		return oauthScopes
+	}
+	return readScopes
+}
 
 // teslaClient performs the onboarding API calls against Tesla's auth server and the
 // regional Fleet API. NOTE: end-to-end behaviour is only verifiable with live
@@ -103,29 +117,20 @@ func (c *teslaClient) registerPartner(domain string) error {
 }
 
 // authorizeURL builds the user-facing OAuth authorize URL (auth-code flow).
-//
-// Unused today: the onboarding wizard still requires a hand-pasted refresh
-// token. This and exchangeCode are the two halves of the self-service OAuth
-// authorization-code flow, so they are kept deliberately rather than deleted.
-//
-//nolint:unused // unfinished OAuth authorization-code flow, see above
-func (c *teslaClient) authorizeURL(redirectURI, state string) string {
+// The wizard's Sign in with Tesla sends the browser here; exchangeCode is the
+// other half.
+func (c *teslaClient) authorizeURL(redirectURI, state, scope string) string {
 	q := url.Values{
 		"response_type": {"code"},
 		"client_id":     {c.clientID},
 		"redirect_uri":  {redirectURI},
-		"scope":         {oauthScopes},
+		"scope":         {scope},
 		"state":         {state},
 	}
 	return c.authHost + c.authPath + "/authorize?" + q.Encode()
 }
 
 // exchangeCode swaps an auth code for tokens; returns the (rotating) refresh token.
-//
-// Unused today: the other half of the unfinished OAuth authorization-code flow.
-// See authorizeURL.
-//
-//nolint:unused // unfinished OAuth authorization-code flow, see above
 func (c *teslaClient) exchangeCode(code, redirectURI string) (string, error) {
 	form := url.Values{
 		"grant_type":    {"authorization_code"},

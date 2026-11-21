@@ -249,3 +249,12 @@ func TestRedactAndMergeSecrets(t *testing.T) {
 		t.Errorf("MergeSecrets clobbered a real change: %q", incoming2.HA.Password)
 	}
 }
+
+func TestApplyEnv_OnboardRedirectURI(t *testing.T) {
+	t.Setenv("TGW_ONBOARD_REDIRECT_URI", "https://keys.example.com/oauth/callback")
+	c := Defaults()
+	applyEnv(&c)
+	if c.Onboard.RedirectURI != "https://keys.example.com/oauth/callback" {
+		t.Errorf("Onboard.RedirectURI = %q", c.Onboard.RedirectURI)
+	}
+}

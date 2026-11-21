@@ -51,7 +51,7 @@ cp fleet-telemetry-config.example.json fleet-telemetry-config.json
 docker compose up -d
 ```
 
-Set `TGW_ONBOARD_ENABLED=true` to run the wizard on port 8099.
+Set `TGW_ONBOARD_ENABLED=true` to run the wizard on port 8099. To sign in with Tesla from the wizard instead of pasting a refresh token, add a redirect URI to your Tesla app (an HTTPS address on your domain; the page need not exist) and set `TGW_ONBOARD_REDIRECT_URI` to it. After login you paste the address Tesla sent the browser to back into the wizard.
 
 **TeslaMate.** Set `TESLA_API_HOST=http://<gateway-host>:4460` and `TESLA_WSS_HOST=ws://<gateway-host>:4460`. Keep `TESLA_AUTH_HOST` and your token. Port 4460 has no authentication and serves live location, so keep it on your LAN.
 
