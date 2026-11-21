@@ -39,6 +39,9 @@ type Options struct {
 	CAFile     string // certificate chain for the telemetry server, used when none is pasted
 	// DefaultProfile preselects the enrollment profile until one is saved.
 	DefaultProfile string
+	// ClientSecret is the config's secret (TGW_TESLA_CLIENT_SECRET or its _FILE
+	// form), used when none was saved in the wizard, so it never has to be typed in.
+	ClientSecret string
 	// ProxyTLS verifies the vehicle-command proxy on enroll, the same way the
 	// command relay does. Nil means the system roots, never "skip".
 	ProxyTLS *tls.Config
@@ -186,7 +189,16 @@ func (s *Server) client() *teslaClient {
 	fleetAPI, clientID := s.fleetAPILocked(), s.store.st.ClientID
 	s.store.mu.Unlock()
 	return newTeslaClient(s.opts.AuthHost, s.opts.AuthPath, fleetAPI,
-		clientID, s.store.clientSecret())
+		clientID, s.clientSecret())
+}
+
+// clientSecret is the secret saved in the wizard, falling back to the config's,
+// the same precedence as fleetAPI.
+func (s *Server) clientSecret() string {
+	if sec := s.store.clientSecret(); sec != "" {
+		return sec
+	}
+	return s.opts.ClientSecret
 }
 
 // fleetAPI is the regional Fleet API base entered in step 1, falling back to
@@ -313,6 +325,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, notice string) {
 	st := s.store.st
 	st.Notice = notice
 	s.store.mu.Unlock()
+	st.SecretSet = st.SecretSet || s.opts.ClientSecret != ""
 	v := view{Base: r.Header.Get("X-Ingress-Path"), State: st, Profiles: enroll.Profiles}
 	if st.Domain != "" {
 		v.PairingURL = pairingURL(st.Domain)
@@ -409,7 +422,7 @@ func (s *Server) registerPartner(w http.ResponseWriter, r *http.Request) {
 	s.store.mu.Lock()
 	domain, clientID := s.store.st.Domain, s.store.st.ClientID
 	s.store.mu.Unlock()
-	if domain == "" || clientID == "" || s.store.clientSecret() == "" || s.fleetAPI() == "" {
+	if domain == "" || clientID == "" || s.clientSecret() == "" || s.fleetAPI() == "" {
 		s.render(w, r, "✗ Need domain, client_id, client_secret and a Fleet API URL first.")
 		return
 	}
