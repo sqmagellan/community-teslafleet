@@ -36,6 +36,7 @@ type tier struct {
 
 var tiers = map[string]tier{
 	"realtime":   {1, 0, 0},
+	"prompt":     {5, 0, 600}, // an event, such as a door: sent within seconds
 	"responsive": {15, 0, 240},
 	"normal":     {60, 0, 0},
 	"slow":       {300, 0, 600},
@@ -86,17 +87,17 @@ func profileTier(profile, cat string) string {
 	m := map[string]map[string]string{
 		"eco": {
 			"drive": "responsive", "nav": "slow", "energy": "normal", "climate": "slow",
-			"closure": "slow", "tpms": "slow", "media": "off", "settings": "slow", "diagnostic": "off",
+			"closure": "prompt", "tpms": "slow", "media": "off", "settings": "slow", "diagnostic": "off",
 			"state": "rare",
 		},
 		"balanced": {
 			"drive": "realtime", "nav": "normal", "energy": "responsive", "climate": "normal",
-			"closure": "normal", "tpms": "slow", "media": "normal", "settings": "slow", "diagnostic": "slow",
+			"closure": "prompt", "tpms": "slow", "media": "normal", "settings": "slow", "diagnostic": "slow",
 			"state": "slow",
 		},
 		"live": {
 			"drive": "realtime", "nav": "responsive", "energy": "responsive", "climate": "responsive",
-			"closure": "normal", "tpms": "normal", "media": "responsive", "settings": "slow", "diagnostic": "normal",
+			"closure": "prompt", "tpms": "normal", "media": "responsive", "settings": "slow", "diagnostic": "normal",
 			"state": "normal",
 		},
 	}
