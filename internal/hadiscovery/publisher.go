@@ -522,7 +522,7 @@ func (p *Publisher) discoverNewFields(v config.Vehicle, snap store.Snapshot) {
 			continue
 		}
 		component, cfg := p.genericDiscoveryConfig(v, name, fv.Value, dev, origin)
-		topic := fmt.Sprintf("%s/%s/%s/raw_%s/config", p.cfg.HA.DiscoveryPrefix, component, p.pubID(v), name)
+		topic := fmt.Sprintf("%s/%s/%s/%s/config", p.cfg.HA.DiscoveryPrefix, component, p.pubID(v), fieldKey(name))
 		payload, err := json.Marshal(cfg)
 		if err != nil {
 			p.log.Error("marshal generic discovery failed", "vin", v.VIN, "field", name, "err", err)
@@ -544,8 +544,8 @@ func (p *Publisher) discoverNewFields(v config.Vehicle, snap store.Snapshot) {
 func (p *Publisher) genericDiscoveryConfig(v config.Vehicle, field string, val any, dev, origin map[string]any) (string, map[string]any) {
 	id := p.pubID(v)
 	c := map[string]any{
-		"name":            humanize(field),
-		"unique_id":       p.uid(v, "raw_"+field),
+		"name":            fieldName(field),
+		"unique_id":       p.uid(v, fieldKey(field)),
 		"state_topic":     p.stateTopic(id),
 		"device":          dev,
 		"origin":          origin,
@@ -554,14 +554,14 @@ func (p *Publisher) genericDiscoveryConfig(v config.Vehicle, field string, val a
 	}
 	p.setAvailability(c)
 	if _, ok := val.(bool); ok {
-		p.setEntityID(c, "binary_sensor", id+"_"+field)
+		p.setEntityID(c, "binary_sensor", id+"_"+fieldKey(field))
 		c["payload_on"] = "true"
 		c["payload_off"] = "false"
 		// Absent renders None (unknown); see boolTemplate.
 		c["value_template"] = boolTemplate(field)
 		return "binary_sensor", c
 	}
-	p.setEntityID(c, "sensor", id+"_"+field)
+	p.setEntityID(c, "sensor", id+"_"+fieldKey(field))
 	// none, not '': see valueTemplate.
 	c["value_template"] = fmt.Sprintf("{{ value_json.%s | default(none) }}", field)
 	// The name heuristic only applies to values that are actually numeric. Enum strings
@@ -607,6 +607,16 @@ func (p *Publisher) publishVehicleDiscovery(v config.Vehicle) error {
 	note := func(err error) {
 		if err != nil && firstErr == nil {
 			firstErr = err
+		}
+	}
+	// Clear retired topics first. An empty retained payload makes HA delete
+	// the entity; a topic that never held a config is left as it was.
+	for _, topic := range retiredTopics(p.cfg.HA.DiscoveryPrefix, p.pubID(v)) {
+		tok := p.client.Publish(topic, 1, true, []byte{})
+		if !tok.WaitTimeout(pubTimeout) {
+			note(fmt.Errorf("clear %s timed out", topic))
+		} else {
+			note(tok.Error())
 		}
 	}
 	dev := p.deviceInfo(v)
@@ -718,9 +728,9 @@ func (p *Publisher) commandDiscoveryConfig(v config.Vehicle, ce commands.Entity,
 		c["state_locked"] = "LOCKED"
 		c["state_unlocked"] = "UNLOCKED"
 		c["state_topic"] = state
-		// An absent "locked" key used to render UNLOCKED. It renders the
+		// An absent "lock" key used to render UNLOCKED. It renders the
 		// literal None now, which HA shows as unknown.
-		c["value_template"] = "{% set v = value_json.locked | default(none) %}" +
+		c["value_template"] = "{% set v = value_json.lock | default(none) %}" +
 			"{{ none if v is none else ('LOCKED' if v else 'UNLOCKED') }}"
 	case "number":
 		rg := p.numberRange(v.VIN, ce.Key, commands.Range{Min: ce.Min, Max: ce.Max})
@@ -807,6 +817,9 @@ func (p *Publisher) discoveryConfig(v config.Vehicle, e entity, dev, origin map[
 	}
 	if e.Category != "" {
 		c["entity_category"] = e.Category
+	}
+	if e.Disabled {
+		c["enabled_by_default"] = false
 	}
 	if e.Precision >= 0 {
 		c["suggested_display_precision"] = e.Precision

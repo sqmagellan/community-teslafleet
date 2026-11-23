@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **One naming scheme for Home Assistant entities.** **Entity IDs change.** The gateway clears the old discovery topics itself, so Home Assistant deletes the old entities. Automations that use them need the new IDs.
+  - Fields without a curated entity were keyed by their Tesla name run together (`sensor.<car>_chargeenablerequest`), under `raw_<Field>` topics. They now follow the curated scheme: `charge_enable_request`, named "Charge enable request".
+  - Binary sensors are named for the thing, and the device class supplies the state words:
+    - `lock` ("Lock: Locked") replaces `locked` ("Locked: Unlocked").
+    - `sentry_mode` replaces `sentry`.
+    - `charge_cable` replaces `plugged_in`.
+    - `driver_seat` replaces `driver_present`.
+  - One entity per fact. `online`, `charging` and `at_home` are gone; use `state`, `charging_state` and the location tracker's zone. The sentry enum becomes `sentry_mode_state`. It, `soc_raw` and `charge_state_raw` are diagnostic and disabled by default.
+  - On every announce the gateway publishes an empty retained config to each retired topic.
 - **Entity IDs on Home Assistant 2026.4 and later.** Home Assistant stopped reading `object_id` in MQTT discovery, so entity IDs followed the device and entity names instead of the keys: the battery level became `sensor.<car>_battery`, not `sensor.<car>_battery_level`. Discovery now also sends `default_entity_id` (`<domain>.<car>_<key>`, lowercase), which names new entities as before. `object_id` stays for older versions. Entities that already exist keep their IDs.
 - **Wizard client secret from config.** The wizard used the client secret only from its own form, so `TGW_TESLA_CLIENT_SECRET` and its `_FILE` form did nothing there and the secret had to be typed into a web page. It now uses the configured secret when none was saved in the wizard; a secret saved in the wizard still wins, as its Fleet API URL does.
 - **Wizard with the public key only.** When the private key lives only with the vehicle-command proxy, as in `docker-compose.yml` (`./proxy/private-key.pem`), the wizard saw no keypair: step 2 offered "Generate keypair", and generating replaced the registered public key without the confirmation. The public key on disk now counts as an existing keypair.

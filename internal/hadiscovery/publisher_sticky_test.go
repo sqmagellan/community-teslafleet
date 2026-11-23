@@ -32,7 +32,7 @@ func TestStickyKeysCoverDefaultlessTemplates(t *testing.T) {
 	for _, k := range stickyKeys(config.Commands{}) {
 		got[k] = true
 	}
-	for _, k := range []string{"climate_on", "locked", "charge_port", "windows", "frunk", "trunk", "sentry", "charging"} {
+	for _, k := range []string{"climate_on", "lock", "charge_port", "windows", "frunk", "trunk", "sentry_mode", "charging"} {
 		if !got[k] {
 			t.Errorf("sticky keys miss %q", k)
 		}
