@@ -57,6 +57,11 @@ type Options struct {
 	// wizard falls back to refreshing for itself only when commands are off and
 	// there is no relay to defer to.
 	Tokens TokenOwner
+
+	// Ingress is true in the Home Assistant add-on. The Supervisor's ingress
+	// proxy (172.30.32.2) has already authenticated the user, so without a
+	// password the wizard serves it as well as loopback.
+	Ingress bool
 }
 
 // TokenOwner is the narrow slice of the command relay the wizard needs. Keeping
@@ -279,10 +284,12 @@ func (s *Server) WellKnownHandler() http.Handler {
 // keypair, the partner domain, or the stored refresh token, so "no password
 // configured" must not mean "open to the network".
 //
-// With a password: Basic Auth. Without one: loopback only. The HA add-on runs
-// behind the Supervisor's ingress proxy, which reaches us over loopback, so
-// that path keeps working; a standalone listener on :8099 no longer serves the
-// LAN unless a password is set.
+// With a password: Basic Auth. Without one: loopback only, plus, in the HA
+// add-on, the Supervisor's ingress proxy. That proxy connects from
+// 172.30.32.2 on the hassio network, not over loopback, and has already
+// authenticated the Home Assistant user. Other add-ons and HA Core share that
+// network, so only the proxy's address is trusted. A standalone listener on
+// :8099 does not serve the LAN unless a password is set.
 func (s *Server) auth(next http.Handler) http.Handler {
 	return s.sameSite(s.login(next))
 }
@@ -307,11 +314,23 @@ func (s *Server) sameSite(next http.Handler) http.Handler {
 	})
 }
 
+// ingressProxy is the Supervisor's fixed address on the hassio network, the
+// one Home Assistant documents for ingress add-ons to allow.
+var ingressProxy = net.IPv4(172, 30, 32, 2)
+
+// trustedPeer reports whether a passwordless request from ip may use the wizard.
+func (s *Server) trustedPeer(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || (s.opts.Ingress && ip.Equal(ingressProxy))
+}
+
 func (s *Server) login(next http.Handler) http.Handler {
 	if s.opts.Password == "" {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			host, _, err := net.SplitHostPort(r.RemoteAddr)
-			if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
+			if err != nil || !s.trustedPeer(net.ParseIP(host)) {
 				s.log.Warn("rejected non-loopback onboarding request (no password configured)",
 					"remote_addr", r.RemoteAddr)
 				http.Error(w, "forbidden: set a password to use the wizard over the network",

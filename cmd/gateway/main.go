@@ -249,6 +249,7 @@ func main() {
 		obOpts := onboard.Options{
 			DataDir:      cfg.Onboard.DataDir,
 			Password:     cfg.Onboard.Password,
+			Ingress:      os.Getenv("SUPERVISOR_TOKEN") != "", // HA add-on: served through ingress
 			AuthHost:     cfg.Commands.AuthHost,
 			AuthPath:     cfg.Commands.AuthPath,
 			FleetAPI:     cfg.Commands.FleetAPIURL,
