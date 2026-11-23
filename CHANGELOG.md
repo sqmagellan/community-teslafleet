@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.2: the add-on wizard opens from the sidebar (2026-11-23)
 
 - **Doors, windows and the lock within seconds.** Eco sent `DoorState`, `Locked` and the four windows at most every 5 minutes, and balanced and live every minute, so a door opened and closed stayed open in Home Assistant until the interval passed. Every profile now sends them when they change, at most every 5 seconds, and resends them every 10 minutes as eco did. The wizard's estimate rises more than the bill, because it assumes a value that changes at every interval. Enroll again (steps 6b and 7) to apply it.
 - **Add-on wizard through the sidebar.** The wizard served only loopback when no password was set, but the Supervisor's ingress proxy connects from `172.30.32.2`, so the add-on answered every sidebar request with "forbidden: set a password to use the wizard over the network", and the add-on has no password option (#13). In the add-on the wizard now also serves that one address; other hosts on the hassio network are still refused, and standalone installs are unchanged.
@@ -65,7 +65,7 @@ Changes since upstream's last add-on image, 0.1.8.
 
 **Security**
 - **Endpoints.** `/debug/state` is off by default. Enrollment and paid Fleet API fetches require a token.
-- **Wizard.** Without a password, it answers only on loopback; Home Assistant ingress still works. Cross-site form posts are refused.
+- **Wizard.** Without a password, it answers only on loopback; Home Assistant ingress still works (Wrong; see 0.2.2.). Cross-site form posts are refused.
 - **Secrets.** Any string setting can be read from `<VAR>_FILE`. Tokens are kept out of logs, and child processes no longer inherit credentials.
 - **WebSocket.** A browser `Origin` must match the host.
 - **Dependencies.** Go 1.26.9, go-chi 5.5.0 and current `golang.org/x` packages. govulncheck is clean.
